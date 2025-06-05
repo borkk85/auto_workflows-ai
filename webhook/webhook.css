@@ -1,0 +1,29 @@
+/*#submit {*/
+/*	margin-left: 150px;*/
+/*	margin-top: 15px;*/
+/*	width: 100px;*/
+/*	font-size: 15px;*/
+/*}*/
+#api_key_label,#ai_model_label {
+	font-size: 15px;
+	font-weight: bold;
+}
+#api_key {
+	width: 300px;
+	
+} 
+#ai_model {
+	width: 300px;
+	
+	
+}
+
+.block_item label {
+	display: inline-block !important;
+	width: 100%;
+	margin-bottom: 6px;
+        font-weight: bold;
+}
+.block_item {
+	margin-bottom: 20px;
+}
