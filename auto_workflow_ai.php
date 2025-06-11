@@ -65,6 +65,7 @@ include(WP_PLUGIN_DIR . '/auto_workflows-ai/price-rules-engine.php');
 include(WP_PLUGIN_DIR . '/auto_workflows-ai/price-updates.php');
 include(WP_PLUGIN_DIR . '/auto_workflows-ai/price-notifications.php');
 include(WP_PLUGIN_DIR . '/auto_workflows-ai/price-admin.php');
+include(WP_PLUGIN_DIR . '/auto_workflows-ai/price-security.php');
 //AI integration page into dashboard settings Tab
 add_action('admin_menu', 'add_my_custom_settings_page');
 

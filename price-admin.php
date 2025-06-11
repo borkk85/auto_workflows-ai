@@ -290,47 +290,148 @@ function save_price_settings_meta_box_data($post_id)
     }
 }
 
-function display_pending_scraper_updates()
-{
+
+function display_pending_scraper_updates() {
     $pending_updates = get_option('pending_price_updates', array());
+    
+    // Clean up old entries automatically
+    $cleaned = cleanup_old_pending_updates();
+    if ($cleaned > 0) {
+        $pending_updates = get_option('pending_price_updates', array());
+        echo '<div class="notice notice-info inline"><p>Automatically cleaned up ' . $cleaned . ' old pending updates.</p></div>';
+    }
 
     if (empty($pending_updates)) {
         echo '<p>No pending price update requests.</p>';
         return;
     }
 
-?>
-    <h3>Pending Scraper Updates</h3>
-    <table class="wp-list-table widefat fixed striped">
-        <thead>
-            <tr>
-                <th>Post</th>
-                <th>Requested At</th>
-                <th>Time Elapsed</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($pending_updates as $post_id => $timestamp): ?>
-                <?php
-                $post = get_post($post_id);
-                if (!$post) continue;
-
-                $time_elapsed = human_time_diff($timestamp, current_time('timestamp'));
-                ?>
+    $total_pending = count($pending_updates);
+    $show_limit = 20; // Show only first 20 by default
+    $showing_limited = $total_pending > $show_limit;
+    
+    ?>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <h3 style="margin: 0;">Pending Scraper Updates (<?php echo $total_pending; ?> total)</h3>
+        <div>
+            <?php if ($showing_limited): ?>
+                <button type="button" class="button" onclick="toggleAllPendingUpdates()">
+                    <span id="toggle-text">Show All</span>
+                </button>
+            <?php endif; ?>
+            <a href="<?php echo esc_url(admin_url('admin-post.php?action=clear_all_pending_updates&_wpnonce=' . wp_create_nonce('clear_all_pending_updates'))); ?>" 
+               class="button button-secondary" 
+               onclick="return confirm('Clear all pending updates? This cannot be undone.')">
+                Clear All
+            </a>
+        </div>
+    </div>
+    
+    <?php if ($showing_limited): ?>
+        <div class="notice notice-info inline">
+            <p>Showing first <?php echo $show_limit; ?> of <?php echo $total_pending; ?> pending updates. 
+               <strong>Note:</strong> Large numbers usually indicate stale data that should be cleared.</p>
+        </div>
+    <?php endif; ?>
+    
+    <div id="pending-updates-container" style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd;">
+        <table class="wp-list-table widefat fixed striped" style="margin: 0;">
+            <thead style="position: sticky; top: 0; background: white; z-index: 1;">
                 <tr>
-                    <td><a href="<?php echo get_edit_post_link($post_id); ?>"><?php echo get_the_title($post_id); ?></a></td>
-                    <td><?php echo date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $timestamp); ?></td>
-                    <td><?php echo $time_elapsed; ?> ago</td>
-                    <td>
-                        <a href="<?php echo admin_url('admin-post.php?action=force_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('force_price_update')); ?>" class="button">Retry</a>
-                        <a href="<?php echo admin_url('admin-post.php?action=cancel_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('cancel_price_update')); ?>" class="button">Cancel</a>
-                    </td>
+                    <th style="width: 40%;">Post</th>
+                    <th style="width: 20%;">Requested At</th>
+                    <th style="width: 20%;">Time Elapsed</th>
+                    <th style="width: 20%;">Actions</th>
                 </tr>
-            <?php endforeach; ?>
-        </tbody>
-    </table>
-<?php
+            </thead>
+            <tbody>
+                <?php 
+                $count = 0;
+                foreach ($pending_updates as $post_id => $timestamp): 
+                    $count++;
+                    $is_hidden = $showing_limited && $count > $show_limit;
+                    
+                    $post = get_post($post_id);
+                    if (!$post) {
+                        // Post does not exist anymore - remove from pending
+                        unset($pending_updates[$post_id]);
+                        continue;
+                    }
+
+                    $time_elapsed = human_time_diff($timestamp, current_time('timestamp'));
+                    $is_old = (current_time('timestamp') - $timestamp) > (6 * HOUR_IN_SECONDS);
+                    
+                    // Prepare CSS classes and styles
+                    $row_classes = 'pending-row';
+                    if ($is_hidden) {
+                        $row_classes .= ' hidden-row';
+                    }
+                    
+                    $row_style = '';
+                    if ($is_hidden) {
+                        $row_style .= 'display: none;';
+                    }
+                    if ($is_old) {
+                        $row_style .= 'background-color: #ffeaa7;';
+                    }
+                ?>
+                    <tr class="<?php echo esc_attr($row_classes); ?>" style="<?php echo esc_attr($row_style); ?>">
+                        <td>
+                            <a href="<?php echo esc_url(get_edit_post_link($post_id)); ?>">
+                                <?php echo esc_html(get_the_title($post_id)); ?>
+                            </a>
+                            <?php if ($is_old): ?>
+                                <span style="color: #e17055; font-size: 12px;">(Possibly stale)</span>
+                            <?php endif; ?>
+                        </td>
+                        <td><?php echo esc_html(date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $timestamp)); ?></td>
+                        <td>
+                            <?php echo esc_html($time_elapsed); ?> ago
+                            <?php if ($is_old): ?>
+                                <br><span style="color: #e17055; font-size: 11px;">Old request</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=force_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('force_price_update'))); ?>" 
+                               class="button button-small">Retry</a>
+                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=cancel_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('cancel_price_update'))); ?>" 
+                               class="button button-small">Cancel</a>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    
+    <?php if ($showing_limited): ?>
+        <script>
+        function toggleAllPendingUpdates() {
+            var hiddenRows = document.querySelectorAll('.hidden-row');
+            var toggleText = document.getElementById('toggle-text');
+            var isShowing = toggleText.textContent === 'Show All';
+            
+            for (var i = 0; i < hiddenRows.length; i++) {
+                hiddenRows[i].style.display = isShowing ? 'table-row' : 'none';
+            }
+            
+            toggleText.textContent = isShowing ? 'Show Less' : 'Show All';
+        }
+        </script>
+    <?php endif; ?>
+    
+    <div style="margin-top: 15px;">
+        <p class="description">
+            <strong>Tips:</strong> 
+            Requests older than 6 hours are highlighted as potentially stale.<br>
+            Large numbers of pending updates usually indicate the scraper is not running.<br>
+            Use Clear All to reset if you have many stale requests.
+        </p>
+    </div>
+    
+    <?php
+    
+    // Update the pending_updates option to remove non-existent posts
+    update_option('pending_price_updates', $pending_updates);
 }
 
 // Add handler for cancel action
