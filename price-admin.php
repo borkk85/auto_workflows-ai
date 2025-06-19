@@ -149,8 +149,7 @@ function add_price_settings_meta_box()
 }
 
 // Meta box callback function
-function price_settings_meta_box_callback($post)
-{
+function price_settings_meta_box_callback($post) {
     // Add nonce for security
     wp_nonce_field('price_settings_meta_box_nonce', 'price_settings_nonce');
 
@@ -160,27 +159,51 @@ function price_settings_meta_box_callback($post)
     $update_both_prices = get_post_meta($post->ID, '_update_both_prices', true);
     $disable_price_updates = get_post_meta($post->ID, '_disable_price_updates', true);
     $price_sources = get_post_meta($post->ID, '_price_sources', true);
+    
+    // Get timestamp data
     $last_price_check = get_post_meta($post->ID, '_last_price_check', true);
+    $last_update_attempt = get_post_meta($post->ID, '_last_price_update_attempt', true);
 
-    // Format sources for display
-    $discount_source = isset($price_sources['discount_price_source']) ? $price_sources['discount_price_source'] : 'unknown';
-    $original_source = isset($price_sources['original_price_source']) ? $price_sources['original_price_source'] : 'unknown';
+    // Use the most recent timestamp available
+    $most_recent_check = max($last_price_check, $last_update_attempt);
 
-    // Format timestamp
-    $last_check_date = $last_price_check ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $last_price_check) : 'Never';
+    if ($most_recent_check) {
+        $last_check_date = date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $most_recent_check);
+    } else {
+        $last_check_date = 'Never';
+    }
+
+    // Format sources for display with friendly names
+    $source_names = array(
+        'amazon.se' => 'Amazon SE',
+        'amazon.de' => 'Amazon DE', 
+        'amazon.fr' => 'Amazon FR',
+        'amazon.nl' => 'Amazon NL',
+        'amazon.it' => 'Amazon IT',
+        'amazon.es' => 'Amazon ES',
+        'amazon.co.uk' => 'Amazon UK',
+        'amazon.com.be' => 'Amazon BE',
+        'manual' => 'Manual entry'
+    );
+
+    $discount_source = isset($price_sources['discount_price_source']) ? $price_sources['discount_price_source'] : 'manual';
+    $original_source = isset($price_sources['original_price_source']) ? $price_sources['original_price_source'] : 'manual';
+
+    $discount_source_display = isset($source_names[$discount_source]) ? $source_names[$discount_source] : ucfirst($discount_source);
+    $original_source_display = isset($source_names[$original_source]) ? $source_names[$original_source] : ucfirst($original_source);
 
     ?>
     <div class="price-settings-container">
         <div class="price-setting">
             <label for="discount_price">Discount Price (SEK):</label>
             <input type="number" id="discount_price" name="discount_price" value="<?php echo esc_attr($discount_price); ?>" step="0.01" />
-            <p class="description">Source: <?php echo esc_html($discount_source); ?></p>
+            <p class="description">Source: <?php echo esc_html($discount_source_display); ?></p>
         </div>
 
         <div class="price-setting">
             <label for="original_price">Original Price (SEK):</label>
             <input type="number" id="original_price" name="original_price" value="<?php echo esc_attr($original_price); ?>" step="0.01" />
-            <p class="description">Source: <?php echo esc_html($original_source); ?></p>
+            <p class="description">Source: <?php echo esc_html($original_source_display); ?></p>
         </div>
 
         <div class="price-update-setting">
@@ -201,12 +224,19 @@ function price_settings_meta_box_callback($post)
 
         <div class="price-last-check">
             <p><strong>Last Price Check:</strong> <?php echo esc_html($last_check_date); ?></p>
+            <?php if ($most_recent_check): ?>
+                <p class="description">
+                    <?php 
+                    $hours_ago = round((current_time('timestamp') - $most_recent_check) / 3600, 1);
+                    echo $hours_ago < 1 ? 'Less than 1 hour ago' : $hours_ago . ' hours ago';
+                    ?>
+                </p>
+            <?php endif; ?>
         </div>
     </div>
 
     <script>
         jQuery(document).ready(function($) {
-
             $('#disable_price_updates').change(function() {
                 if ($(this).is(':checked')) {
                     $('#update_both_prices').prop('disabled', true).closest('.price-update-setting').css('opacity', 0.5);

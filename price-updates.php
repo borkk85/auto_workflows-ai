@@ -507,8 +507,7 @@ function update_price_api($request)
     }
 }
 
-function display_pending_approval_products()
-{
+function display_pending_approval_products() {
     $args = array(
         'post_type' => 'post',
         'posts_per_page' => -1,
@@ -525,15 +524,21 @@ function display_pending_approval_products()
 
     if ($approval_query->have_posts()) {
     ?>
+        <div style="background: #fff3cd; padding: 10px; margin-bottom: 15px; border-left: 4px solid #ffc107;">
+            <strong>⚠️ Important:</strong> Posts awaiting approval are excluded from price update requests until resolved.
+        </div>
+        
         <table class="wp-list-table widefat fixed striped">
             <thead>
                 <tr>
-                    <th>Post Title</th>
-                    <th>Current Price</th>
-                    <th>New Price</th>
-                    <th>Change</th>
-                    <th>Date</th>
-                    <th>Actions</th>
+                    <th style="width: 18%;">Post Title</th>
+                    <th style="width: 15%;">Price Comparison</th>
+                    <th style="width: 10%;">Current Deal</th>
+                    <th style="width: 10%;">New Deal</th>
+                    <th style="width: 8%;">Change</th>
+                    <th style="width: 12%;">Source</th>
+                    <th style="width: 10%;">Date</th>
+                    <th style="width: 17%;">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -543,29 +548,107 @@ function display_pending_approval_products()
                     $post_id = get_the_ID();
 
                     $pending_data = get_post_meta($post_id, '_pending_price_data', true);
-
                     if (!$pending_data) continue;
 
-                    $current_price = isset($pending_data['previous_discount_price']) ? $pending_data['previous_discount_price'] : get_post_meta($post_id, '_discount_price', true);
-                    $new_price = isset($pending_data['discount_price']) ? $pending_data['discount_price'] : 0;
+                    // Get price data with float conversion
+                    $current_discount = isset($pending_data['previous_discount_price']) ? floatval($pending_data['previous_discount_price']) : 0;
+                    $new_discount = isset($pending_data['discount_price']) ? floatval($pending_data['discount_price']) : 0;
+                    $current_original = isset($pending_data['previous_original_price']) ? floatval($pending_data['previous_original_price']) : 0;
+                    $new_original = isset($pending_data['original_price']) ? floatval($pending_data['original_price']) : 0;
 
-                    $price_change = isset($pending_data['discount_price_change']) ? $pending_data['discount_price_change'] : 0;
-                    $price_change_class = $price_change < 0 ? 'price-decrease' : 'price-increase';
-                    $price_change_formatted = number_format(abs($price_change), 2) . '%';
-                    $price_change_formatted = $price_change < 0 ? '↓ ' . $price_change_formatted : '↑ ' . $price_change_formatted;
+                    // Calculate discount percentages
+                    $current_discount_percent = 0;
+                    if ($current_original > 0 && $current_discount > 0) {
+                        $current_discount_percent = round((($current_original - $current_discount) / $current_original) * 100);
+                    }
+                    
+                    $new_discount_percent = 0;
+                    if ($new_original > 0 && $new_discount > 0) {
+                        $new_discount_percent = round((($new_original - $new_discount) / $new_original) * 100);
+                    }
 
+                    // Get price change
+                    $discount_change = isset($pending_data['discount_price_change']) ? floatval($pending_data['discount_price_change']) : 0;
+                    $price_change_class = $discount_change < 0 ? 'price-decrease' : 'price-increase';
+                    $price_change_formatted = ($discount_change >= 0 ? '+' : '') . number_format($discount_change, 1) . '%';
+
+                    // Get sources
+                    $price_sources = isset($pending_data['price_sources']) ? $pending_data['price_sources'] : array();
+                    $discount_source = isset($price_sources['discount_price_source']) ? $price_sources['discount_price_source'] : 'unknown';
+                    $original_source = isset($price_sources['original_price_source']) ? $price_sources['original_price_source'] : 'unknown';
+
+                    // Get timestamp
                     $timestamp = isset($pending_data['timestamp']) ? $pending_data['timestamp'] : 0;
-                    $date_formatted = $timestamp ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $timestamp) : '';
+                    $date_formatted = $timestamp ? date_i18n('M j, H:i', $timestamp) : '';
+                    
+                    // Determine if this is a good or bad change
+                    $deal_getting_better = $new_discount_percent >= $current_discount_percent;
+                    $row_class = $deal_getting_better ? 'good-deal' : 'bad-deal';
                 ?>
-                    <tr>
-                        <td><a href="<?php echo get_edit_post_link($post_id); ?>"><?php the_title(); ?></a></td>
-                        <td><?php echo number_format($current_price, 2); ?> SEK</td>
-                        <td><?php echo number_format($new_price, 2); ?> SEK</td>
-                        <td class="<?php echo $price_change_class; ?>"><?php echo $price_change_formatted; ?></td>
-                        <td><?php echo $date_formatted; ?></td>
+                    <tr class="<?php echo $row_class; ?>">
                         <td>
-                            <a href="<?php echo admin_url('admin-post.php?action=approve_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('approve_price_update')); ?>" class="button-primary">Approve</a>
-                            <a href="<?php echo admin_url('admin-post.php?action=reject_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('reject_price_update')); ?>" class="button">Reject</a>
+                            <a href="<?php echo esc_url(get_edit_post_link($post_id)); ?>">
+                                <?php echo esc_html(get_the_title($post_id)); ?>
+                            </a>
+                        </td>
+                        <td>
+                            <div style="font-size: 11px; line-height: 1.3;">
+                                <strong>Before:</strong><br>
+                                <?php echo number_format($current_discount, 0); ?> / <?php echo number_format($current_original, 0); ?> SEK<br>
+                                <strong>After:</strong><br>
+                                <?php echo number_format($new_discount, 0); ?> / <?php echo number_format($new_original, 0); ?> SEK
+                            </div>
+                        </td>
+                        <td>
+                            <?php if ($current_discount_percent > 0): ?>
+                                <strong><?php echo $current_discount_percent; ?>% off</strong>
+                            <?php else: ?>
+                                <span style="color: #666;">-</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php if ($new_discount_percent > 0): ?>
+                                <strong style="color: <?php echo $deal_getting_better ? 'green' : 'red'; ?>;">
+                                    <?php echo $new_discount_percent; ?>% off
+                                </strong>
+                                <?php if ($deal_getting_better): ?>
+                                    <span style="color: green;">📈</span>
+                                <?php else: ?>
+                                    <span style="color: red;">📉</span>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <span style="color: #666;">-</span>
+                            <?php endif; ?>
+                        </td>
+                        <td class="<?php echo esc_attr($price_change_class); ?>">
+                            <?php echo esc_html($price_change_formatted); ?>
+                        </td>
+                        <td>
+                            <div style="font-size: 11px;">
+                                <strong>Discount:</strong> <?php echo esc_html(strtoupper(str_replace('amazon.', '', $discount_source))); ?><br>
+                                <strong>Original:</strong> <?php echo esc_html(strtoupper(str_replace('amazon.', '', $original_source))); ?>
+                            </div>
+                        </td>
+                        <td><?php echo esc_html($date_formatted); ?></td>
+                        <td>
+                            <?php if ($deal_getting_better): ?>
+                                <div style="background: #d4edda; padding: 5px; border-radius: 3px; margin-bottom: 5px;">
+                                    <small style="color: #155724; font-weight: bold;">✓ Deal Improving</small>
+                                </div>
+                            <?php else: ?>
+                                <div style="background: #f8d7da; padding: 5px; border-radius: 3px; margin-bottom: 5px;">
+                                    <small style="color: #721c24; font-weight: bold;">⚠ Deal Worsening</small>
+                                </div>
+                            <?php endif; ?>
+                            
+                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=approve_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('approve_price_update'))); ?>" 
+                               class="button-primary button-small" style="margin-bottom: 2px; <?php echo $deal_getting_better ? '' : 'background: #28a745; border-color: #28a745;'; ?>">
+                               ✓ Approve
+                            </a><br>
+                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=reject_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('reject_price_update'))); ?>" 
+                               class="button button-small" style="<?php echo !$deal_getting_better ? 'background: #dc3545; color: white; border-color: #dc3545;' : ''; ?>">
+                               ✗ Reject & Archive
+                            </a>
                         </td>
                     </tr>
                 <?php
@@ -573,9 +656,65 @@ function display_pending_approval_products()
                 ?>
             </tbody>
         </table>
+        
+        <style>
+        .good-deal {
+            background-color: #f8fff8 !important;
+        }
+        .bad-deal {
+            background-color: #fff8f8 !important;
+        }
+        .price-decrease {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .price-increase {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        </style>
+        
+        <div style="margin-top: 15px; background: #f0f8ff; padding: 15px; border-left: 4px solid #0073aa;">
+            <h4 style="margin-top: 0;">📊 How to Read This Table:</h4>
+            <div style="display: flex; gap: 30px;">
+                <div style="flex: 1;">
+                    <h5>Price Comparison:</h5>
+                    <ul style="margin: 5px 0 0 20px; font-size: 13px;">
+                        <li><strong>Before:</strong> Current discount / original prices</li>
+                        <li><strong>After:</strong> New discount / original prices</li>
+                        <li><strong>Deal %:</strong> Discount percentage (higher = better deal)</li>
+                    </ul>
+                </div>
+                <div style="flex: 1;">
+                    <h5>Visual Indicators:</h5>
+                    <ul style="margin: 5px 0 0 20px; font-size: 13px;">
+                        <li><span style="color: green;">📈 Green rows:</span> Deal is improving</li>
+                        <li><span style="color: red;">📉 Red rows:</span> Deal is getting worse</li>
+                        <li><strong>Source:</strong> Which Amazon store provided each price</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 4px;">
+                <h5 style="margin: 0 0 5px 0;">💡 Decision Guidelines:</h5>
+                <ul style="margin: 5px 0 0 20px; font-size: 13px;">
+                    <li><strong>Approve if:</strong> New deal is still 60%+ off OR deal is improving</li>
+                    <li><strong>Reject if:</strong> New deal is less than 40% off AND deal is worsening</li>
+                    <li><strong>Check sources:</strong> Ensure discount price is from SE (SEK) when possible</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div style="margin-top: 10px;">
+            <p><strong>Actions:</strong></p>
+            <ul>
+                <li><strong>✓ Approve:</strong> Accept the new prices and update the post</li>
+                <li><strong>✗ Reject & Archive:</strong> Move post to archive category with "deal no longer available" message</li>
+            </ul>
+        </div>
     <?php
     } else {
-        echo '<p>No products currently need approval.</p>';
+        echo '<p>✅ No products currently need approval.</p>';
     }
 
     wp_reset_postdata();

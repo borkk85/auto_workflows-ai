@@ -11,10 +11,10 @@ function send_price_change_notification($post_id, $price_data) {
     $post_url = get_edit_post_link($post_id, '');
     $admin_url = admin_url('options-general.php?page=ai_integration&tab=price_updates');
     
-    $discount_change_formatted = number_format($price_data['discount_price_change'], 2);
+    $discount_change_formatted = number_format(floatval($price_data['discount_price_change']), 2);
     $discount_change_formatted = ($price_data['discount_price_change'] >= 0 ? '+' : '') . $discount_change_formatted . '%';
     
-    $original_change_formatted = number_format($price_data['original_price_change'], 2);
+    $original_change_formatted = number_format(floatval($price_data['original_price_change']), 2);
     $original_change_formatted = ($price_data['original_price_change'] >= 0 ? '+' : '') . $original_change_formatted . '%';
     
     $html_message = '
