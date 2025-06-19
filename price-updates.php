@@ -122,6 +122,18 @@ function generate_price_update_urls()
                     'value' => '0',
                     'compare' => '='
                 )
+            ),
+            array(
+                'relation' => 'OR',
+                array(
+                    'key' => '_needs_price_validation',
+                    'compare' => 'NOT EXISTS'
+                ),
+                array(
+                    'key' => '_needs_price_validation',
+                    'value' => '0',
+                    'compare' => '='
+                )
             )
         ),
         'fields' => 'ids'
@@ -219,6 +231,11 @@ function handle_reject_price_update()
     $post_id = isset($_GET['post_id']) ? intval($_GET['post_id']) : 0;
 
     if ($post_id > 0) {
+        // ARCHIVE THE POST (this is the missing part)
+        $options = get_option('price_updates_options', array());
+        $archive_category = isset($options['archive_category']) ? intval($options['archive_category']) : 0;
+        archive_post($post_id, 'Price update rejected - archived by admin', $archive_category);
+
         // Clear pending data
         delete_post_meta($post_id, '_pending_price_data');
         delete_post_meta($post_id, '_needs_price_validation');
@@ -276,7 +293,7 @@ function check_price_update_rate_limit($request)
     $rate_limit_key = 'price_update_rate_' . md5($client_ip);
     $requests = get_transient($rate_limit_key) ?: 0;
 
-    $hourly_limit = 200; 
+    $hourly_limit = 200;
 
     if ($requests >= $hourly_limit) {
         error_log('Rate limit exceeded for IP: ' . $client_ip . ' (Requests: ' . $requests . ')');
@@ -311,11 +328,11 @@ function register_secure_price_update_api()
 {
     error_log('Registering secure price update REST API routes');
 
-   
+
     $url_route = register_rest_route('auto-workflows/v1', '/price-update-urls', array(
         'methods' => 'GET',
         'callback' => 'get_price_update_urls_api',
-        'permission_callback' => '__return_true', 
+        'permission_callback' => '__return_true',
         'args' => array()
     ));
 
@@ -673,33 +690,35 @@ function price_updates_admin_css()
 <?php
 }
 
-function track_pending_scraper_updates($post_ids) {
+function track_pending_scraper_updates($post_ids)
+{
     if (empty($post_ids) || !is_array($post_ids)) {
         return;
     }
-    
+
     $pending_updates = get_option('pending_price_updates', array());
-    
+
     $cutoff = current_time('timestamp') - (24 * HOUR_IN_SECONDS);
     foreach ($pending_updates as $id => $time) {
         if ($time < $cutoff) {
             unset($pending_updates[$id]);
         }
     }
-    
+
     foreach ($post_ids as $post_id) {
         $pending_updates[$post_id] = current_time('timestamp');
     }
-    
+
     update_option('pending_price_updates', $pending_updates);
-    
+
     error_log('Tracked ' . count($post_ids) . ' new pending updates. Total pending: ' . count($pending_updates));
 }
 
 
-function remove_from_pending_updates($post_id) {
+function remove_from_pending_updates($post_id)
+{
     $pending_updates = get_option('pending_price_updates', array());
-    
+
     if (isset($pending_updates[$post_id])) {
         unset($pending_updates[$post_id]);
         update_option('pending_price_updates', $pending_updates);
@@ -707,38 +726,40 @@ function remove_from_pending_updates($post_id) {
     }
 }
 
-function cleanup_old_pending_updates() {
+function cleanup_old_pending_updates()
+{
     $pending_updates = get_option('pending_price_updates', array());
     $cutoff = current_time('timestamp') - (24 * HOUR_IN_SECONDS);
     $cleaned = 0;
-    
+
     foreach ($pending_updates as $id => $time) {
         if ($time < $cutoff) {
             unset($pending_updates[$id]);
             $cleaned++;
         }
     }
-    
+
     if ($cleaned > 0) {
         update_option('pending_price_updates', $pending_updates);
         error_log('Cleaned up ' . $cleaned . ' old pending updates. Remaining: ' . count($pending_updates));
     }
-    
+
     return $cleaned;
 }
 
 add_action('admin_post_clear_all_pending_updates', 'handle_clear_all_pending_updates');
-function handle_clear_all_pending_updates() {
+function handle_clear_all_pending_updates()
+{
     if (!isset($_GET['_wpnonce']) || !wp_verify_nonce($_GET['_wpnonce'], 'clear_all_pending_updates')) {
         wp_die('Security check failed');
     }
-    
+
     if (!current_user_can('manage_options')) {
         wp_die('Permission denied');
     }
-    
+
     update_option('pending_price_updates', array());
-    
+
     wp_redirect(admin_url('options-general.php?page=ai_integration&tab=price_updates&updated=pending_cleared'));
     exit;
 }

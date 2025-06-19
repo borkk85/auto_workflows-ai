@@ -267,7 +267,7 @@ function create_manual_blog_using_given_title_create_blog($amazone_prod_basename
                     
                     if (!is_wp_error($term)) {
                         
-                        wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', true);
+                        wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', false);
                         error_log("Assigned tag '{$discount_tag_title}' to post {$newblog_post_id}");
                     } else {
                         error_log('Discount Tag Error: ' . $term->get_error_message());
@@ -407,7 +407,7 @@ function create_blog_using_given_title_create_blog($amazone_product_basename,$bl
                 }
                 
                 if (!is_wp_error($term)) {
-                    wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', true);
+                    wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', false);
                 }
             }
     
@@ -599,7 +599,7 @@ function create_blog_using_given_title_create_blog($amazone_product_basename,$bl
                 
                 if (!is_wp_error($term)) {
                     
-                    wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', true);
+                    wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', false);
                     error_log("Assigned tag '{$discount_tag_title}' to post {$newblog_post_id}");
                 } else {
                     error_log('Discount Tag Error: ' . $term->get_error_message());
