@@ -197,12 +197,18 @@ function process_price_update_api($post_id, $price_data)
         update_post_meta($post_id, '_last_price_check', current_time('timestamp'));
 
         // Update discount percentage and HTML
-        if ($new_original_price > $new_discount_price) {
-            $discount_percentage = (($new_original_price - $new_discount_price) / $new_original_price) * 100;
-            $discount_percentage = round($discount_percentage);
-            update_post_meta($post_id, '_discount_percentage', $discount_percentage);
-            $discount_tag_title = $discount_percentage . '% off';
-            wp_set_post_terms($post_id, [$discount_tag_title], 'post_tag', false);
+        // if ($new_original_price > $new_discount_price) {
+        //     $discount_percentage = (($new_original_price - $new_discount_price) / $new_original_price) * 100;
+        //     $discount_percentage = round($discount_percentage);
+        //     update_post_meta($post_id, '_discount_percentage', $discount_percentage);
+        //     $discount_tag_title = $discount_percentage . '% off';
+        //     wp_set_post_terms($post_id, [$discount_tag_title], 'post_tag', false);
+        // }
+
+        $discount_percentage = update_discount_percentage_and_tag($post_id);
+
+        if ($discount_percentage > 0) {
+            error_log("Automatic update: Updated discount tag for post {$post_id} to '{$discount_percentage}% off'");
         }
 
         update_post_html_with_new_prices($post_id);

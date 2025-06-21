@@ -301,17 +301,10 @@ function save_price_settings_meta_box_data($post_id)
 
     // If prices have changed, update the discount percentage
     if (isset($_POST['original_price']) && isset($_POST['discount_price'])) {
-        $discount_price = floatval($_POST['discount_price']);
-        $original_price = floatval($_POST['original_price']);
-
-        if ($original_price > $discount_price) {
-            $discount_percentage = (($original_price - $discount_price) / $original_price) * 100;
-            $discount_percentage = round($discount_percentage);
-            update_post_meta($post_id, '_discount_percentage', $discount_percentage);
-
-            // Update the discount tag
-            $discount_tag_title = $discount_percentage . '% off';
-            wp_set_post_terms($post_id, [$discount_tag_title], 'post_tag', true);
+        $discount_percentage = update_discount_percentage_and_tag($post_id);
+        
+        if ($discount_percentage > 0) {
+            error_log("Manual edit: Updated discount tag for post {$post_id} to '{$discount_percentage}% off'");
         }
     }
 
