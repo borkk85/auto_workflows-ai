@@ -3,9 +3,8 @@
 if(isset($_POST['put_ai_manul_post'])){
     
     $product_category_id    = $_POST['product_category'];
-    $brand_id               = $_POST['brand_selection'];
-    $brand_term             = get_term($brand_id, 'brands');
-    $brand_name             = $brand_term->name;
+    // Use simple brand name like your working code
+    $brand_name             = 'Amazon';
     $image_url              = $_POST['brand_image_url'];
     $category_hierarchy     = $_POST['category_hierarchy'];
     $manual_link            = $_POST['amazon_url'];
@@ -13,70 +12,82 @@ if(isset($_POST['put_ai_manul_post'])){
     $discount_price         = $_POST['disc_amazon_price'];
     $ai_blog_content        = $_POST['manual_post_title'];
     
-    // Get the Amazone product base name of the path 
+    // Simple basename extraction like your working code
+    $path = parse_url($manual_link, PHP_URL_PATH);
+    $amazone_prod_basename = basename($path);
+    
+    // Get the Amazon product base name of the path 
     $post_category = check_if_post_already_exist_in_database($manual_link);
-    error_log('Brand ID' . $brand_id);
-     $specific_term_id = 79;
-     if ($brand_id == $specific_term_id) {
-         
-        $path = parse_url($manual_link, PHP_URL_PATH);
-        $amazone_prod_basename = basename($path);
-     } else {
-         
-    $manual_post_link = $manual_link; 
+    
+    // FIX: Check if post_category exists and has elements before accessing
+    if(empty($post_category) || $post_category[0]->slug != 'active-deals'){
+
+        /*********************************Generate content from AI **************************************/
+
+        $ai_content  = str_replace(utf8_encode('å'), "är", $ai_blog_content); 
+        $ai_content  = str_replace(utf8_encode('Å'), "A", $ai_content); 
+        $ai_content  = str_replace(utf8_encode('Ö'), "O", $ai_content);
+        $ai_content  = str_replace(utf8_encode('ä'), "ae", $ai_content);
+        $ai_content  = str_replace(utf8_encode('à'), "a", $ai_content);
+        $ai_content  = str_replace(utf8_encode('ö'), "o", $ai_content);
+        $ai_content  = str_replace(utf8_encode('ü'), "är", $ai_content);
+       
+        $ai_content = generate_content_from_AI($ai_content);
+        
+        // FIX: Handle AI API failures gracefully
+        if (strpos($ai_content, 'Error:') === 0) {
+            // AI API failed, use manual input as fallback
+            $blog_post_title = $ai_blog_content;
+            $blog_post_description = "Product description for: " . $ai_blog_content;
+            error_log('AI API failed, using manual fallback: ' . $ai_content);
+        } else {
+            $ai_content = str_replace('"', " ", $ai_content);
+            $deals_category_id = get_category_by_slug('active-deals')->term_id;
+
+            // FIX: Safe content parsing with array bounds checking
+            if(str_contains($ai_content, 'Title')){
+                $ai_content_sp = explode('Description:', trim($ai_content));
+                if (count($ai_content_sp) >= 2) {
+                    $blog_post_title = $ai_content_sp[0];
+                    $blog_post_title = str_replace('Title:', '', $blog_post_title);
+                    $blog_post_description = $ai_content_sp[1];
+                } else {
+                    // Fallback if parsing fails
+                    $blog_post_title = $ai_blog_content;
+                    $blog_post_description = "Product description for: " . $ai_blog_content;
+                }
+            } else {
+                $ai_content_parts = explode(':', trim($ai_content));
+                if (count($ai_content_parts) >= 3) {
+                    $title = $ai_content_parts[1];
+                    $blog_post_title = str_replace('Description', '', $title);
+                    $blog_post_description = $ai_content_parts[2];
+                } else {
+                    // Fallback if parsing fails
+                    $blog_post_title = $ai_blog_content;
+                    $blog_post_description = "Product description for: " . $ai_blog_content;
+                }
+            }
+        }
+      
+        // Use the EXACT function call from your working code
+        $check = create_manual_blog_using_given_title_create_blog(
+            $amazone_prod_basename, 
+            $blog_post_title, 
+            $blog_post_description, 
+            $manual_link, 
+            $discount_price, 
+            $org_price, 
+            [], // Empty array for product_data like your working code
+            $brand_name, 
+            $image_url, 
+            $category_hierarchy, 
+            $product_category_id
+        );
+            
+    } else {
+        echo '<p style="color:red">This post already exists</p>';
     }
-    // $path = parse_url($manual_link, PHP_URL_PATH);
-    // $amazone_prod_basename = basename($path);
-   
-    if($post_category[0]->slug!='deals'){
-
-
-/*********************************Generate conent from AI **************************************/
-
-    //$blog_post_title = translatetext_from_sw_to_eng($blog_title); 
-      
-      
-      $ai_content  = str_replace(utf8_encode('�'), "�r", $ai_blog_content); 
-      $ai_content  = str_replace(utf8_encode('�'), "A", $ai_content); 
-      $ai_content  = str_replace(utf8_encode('�'), "O", $ai_content);
-      $ai_content  = str_replace(utf8_encode('�'), "ae", $ai_content);
-      $ai_content  = str_replace(utf8_encode('�'), "a", $ai_content);
-      $ai_content  = str_replace(utf8_encode('�'), "o", $ai_content);
-      $ai_content  = str_replace(utf8_encode('�'), "�r", $ai_content);
-     
-      $ai_content  = generate_content_from_AI($ai_content);
-      $ai_content  = str_replace('"', " ", $ai_content);
-      $deals_category_id = get_category_by_slug('deals')->term_id;
-    
-
-        if(str_contains($ai_content, 'Title')){
-            
-            $ai_content_sp             = explode('Description:',trim($ai_content));
-            $blog_post_title           = $ai_content_sp[0];
-            $blog_post_title           = str_replace('Title:', '', $blog_post_title);
-            $blog_post_description     = $ai_content_sp[1];
-
-        }else{
-     
-            $ai_content             = explode(':',trim($ai_content));
-            $title                  = $ai_content[1];
-            $blog_post_title        = str_replace('Description', '', $title);
-            $blog_post_description  = $ai_content[2];
-        }
-      
-    
-   // $blog_post_description = create_description_from_AI($blog_post_title);
-  
-    //create dynamic blog 
-                 
-        $check=create_manual_blog_using_given_title_create_blog($amazone_prod_basename,$manual_post_link,$blog_post_title,$blog_post_description,$manual_link, $discount_price, $org_price, $product_data, $brand_name, $image_url, $category_hierarchy, $product_category_id);
-            
-        }else{
-            echo '<p style="color:red" target="_blank">This post Already exist</a>';
-            
-        }
-    
 }
-
 
 ?>
