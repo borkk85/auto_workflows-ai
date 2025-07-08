@@ -24,7 +24,8 @@ if (empty($json)) {
 }
 error_log('Received webhook data: ' . $json);
 
-mail('benknackan@gmail.com', 'Full return form webhook trubo', $json);  
+$sent = mail('benknackan@gmail.com', 'Full return form webhook trubo', $json);
+error_log('Forced PHP mail sent: ' . ($sent ? 'yes' : 'no'));
  
 /*************************Get content from amazone in json***************************************/
  
@@ -40,6 +41,13 @@ if($json){
     $categories = $data['category'];
     $path = parse_url($link, PHP_URL_PATH);
     $amazone_prod_basename = basename($path);
+
+    $existing_post_id = check_if_post_exists_by_basename($amazone_prod_basename);
+    
+    if($existing_post_id) {
+        error_log('Post already exists with basename: ' . $amazone_prod_basename . '. Post ID: ' . $existing_post_id);
+        exit;
+    }
 
     // Get the Amazon product base name of the path 
     $post_category = check_if_post_already_exist_in_database($link);

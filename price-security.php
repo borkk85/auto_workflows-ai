@@ -134,7 +134,7 @@ function display_api_security_status() {
             <tr>
                 <td><strong>Rate Limiting</strong></td>
                 <td><span style="color: green;">✓ Enabled</span></td>
-                <td>200 requests per hour per IP address</td>
+                <td>500 requests per hour per IP address</td>
             </tr>
             <tr>
                 <td><strong>Request Logging</strong></td>
@@ -186,7 +186,7 @@ function display_recent_api_activity() {
                 ?>
                 <tr>
                     <td><code><?php echo esc_html(substr($ip_hash, 0, 12)) . '...'; ?></code></td>
-                    <td><?php echo esc_html($requests); ?>/200</td>
+                    <td><?php echo esc_html($requests); ?>/500</td>
                     <td><span style="color: <?php echo $status_color; ?>;"><?php echo esc_html($status); ?></span></td>
                 </tr>
             <?php endforeach; ?>

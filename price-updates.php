@@ -21,34 +21,36 @@ function add_price_updates_tab()
 
 function display_update_status()
 {
+    global $wpdb;
+
     $options = get_option('price_updates_options');
     $update_frequency = isset($options['update_frequency']) ? intval($options['update_frequency']) : 24;
 
     // Calculate cutoff time
     $cutoff_time = current_time('timestamp') - ($update_frequency * HOUR_IN_SECONDS);
 
-    // Count posts needing updates
-    $args = array(
-        'post_type' => 'post',
-        'post_status' => 'publish',
-        'posts_per_page' => -1,
-        'meta_query' => array(
-            'relation' => 'OR',
-            array(
-                'key' => '_last_price_check',
-                'value' => $cutoff_time,
-                'compare' => '<'
-            ),
-            array(
-                'key' => '_last_price_check',
-                'compare' => 'NOT EXISTS'
-            )
-        ),
-        'fields' => 'ids'
-    );
-
-    $query = new WP_Query($args);
-    $count = count($query->posts);
+    // UPDATED: Count posts needing updates with dual-taxonomy filter
+    $count = $wpdb->get_var($wpdb->prepare("
+        SELECT COUNT(DISTINCT p.ID)
+        FROM {$wpdb->posts} p
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
+        LEFT JOIN {$wpdb->postmeta} pm_check ON p.ID = pm_check.post_id AND pm_check.meta_key = '_last_price_check'
+        WHERE p.post_type = 'post'
+        AND p.post_status = 'publish'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
+        AND (
+            pm_check.meta_value IS NULL 
+            OR pm_check.meta_value < %s
+        )
+    ", $cutoff_time));
 
     echo '<p><strong>Products needing update:</strong> ' . $count . '</p>';
     echo '<p><strong>Update frequency:</strong> Every ' . $update_frequency . ' hours</p>';
@@ -72,26 +74,27 @@ function generate_price_update_urls_callback()
     ));
 }
 
-function generate_price_update_urls() {
+function generate_price_update_urls()
+{
     global $wpdb;
-    
+
     $options = get_option('price_updates_options', array());
     $priority_options = get_option('price_update_priority_options', array());
-    
+
     $update_frequency = isset($options['update_frequency']) ? intval($options['update_frequency']) : 24;
     $max_urls = isset($priority_options['max_urls_per_request']) ? intval($priority_options['max_urls_per_request']) : 100;
     $priority_recent = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 1;
     $prevent_duplicates = isset($priority_options['prevent_duplicate_requests']) ? intval($priority_options['prevent_duplicate_requests']) : 1;
     $min_interval_hours = isset($priority_options['min_request_interval']) ? intval($priority_options['min_request_interval']) : 2;
-    
+
     // Calculate cutoff times
     $cutoff_time = current_time('timestamp') - ($update_frequency * HOUR_IN_SECONDS);
     $recent_request_cutoff = current_time('timestamp') - ($min_interval_hours * HOUR_IN_SECONDS);
-    
+
     // Get currently pending posts to exclude (if prevent_duplicates is enabled)
     $pending_updates = get_option('pending_price_updates', array());
     $exclude_pending_ids = array();
-    
+
     if ($prevent_duplicates && !empty($pending_updates)) {
         foreach ($pending_updates as $post_id => $timestamp) {
             // Only exclude if request was recent (within min_interval_hours)
@@ -100,20 +103,23 @@ function generate_price_update_urls() {
             }
         }
     }
-    
+
     // Build exclusion clause
     $exclude_clause = '';
     if (!empty($exclude_pending_ids)) {
         $exclude_clause = 'AND p.ID NOT IN (' . implode(',', $exclude_pending_ids) . ')';
     }
-    
-    // Base query for posts needing updates
+
+    // UPDATED: Base query for posts needing updates - now includes both store_type AND category filters
     $base_query = "
         SELECT DISTINCT p.ID, p.post_date, pm_link.meta_value as amazon_url, pm_asin.meta_value as asin
         FROM {$wpdb->posts} p
-        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-        INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
         INNER JOIN {$wpdb->postmeta} pm_link ON p.ID = pm_link.post_id AND pm_link.meta_key = '_Amazone_produt_link'
         INNER JOIN {$wpdb->postmeta} pm_asin ON p.ID = pm_asin.post_id AND pm_asin.meta_key = '_Amazone_produt_baseName'
         LEFT JOIN {$wpdb->postmeta} pm_check ON p.ID = pm_check.post_id AND pm_check.meta_key = '_last_price_check'
@@ -122,8 +128,10 @@ function generate_price_update_urls() {
         LEFT JOIN {$wpdb->postmeta} pm_force ON p.ID = pm_force.post_id AND pm_force.meta_key = '_force_price_update'
         WHERE p.post_type = 'post'
         AND p.post_status = 'publish'
-        AND tt.taxonomy = 'store_type'
-        AND t.slug = 'amazon'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
         AND pm_link.meta_value IS NOT NULL
         AND pm_asin.meta_value IS NOT NULL
         AND (pm_disable.meta_value IS NULL OR pm_disable.meta_value != '1')
@@ -135,7 +143,7 @@ function generate_price_update_urls() {
         )
         {$exclude_clause}
     ";
-    
+
     // Add ordering based on priority settings
     if ($priority_recent) {
         $thirty_days_ago = current_time('timestamp') - (30 * DAY_IN_SECONDS);
@@ -152,16 +160,16 @@ function generate_price_update_urls() {
             p.ID ASC
         ";
     }
-    
+
     // Add limit
     $base_query .= " LIMIT {$max_urls}";
-    
+
     // Execute query
     $results = $wpdb->get_results($wpdb->prepare($base_query, $cutoff_time));
-    
+
     $urls = array();
     $post_ids_to_track = array();
-    
+
     foreach ($results as $row) {
         $urls[] = array(
             'post_id' => intval($row->ID),
@@ -169,32 +177,32 @@ function generate_price_update_urls() {
             'asin' => $row->asin,
             'wordpress_url' => get_permalink($row->ID)
         );
-        
+
         $post_ids_to_track[] = intval($row->ID);
-        
+
         // Clear force update flag if it was set
         if (get_post_meta($row->ID, '_force_price_update', true) == '1') {
             delete_post_meta($row->ID, '_force_price_update');
         }
     }
-    
+
     // Track these posts as pending
     if (!empty($post_ids_to_track)) {
         track_pending_scraper_updates($post_ids_to_track);
     }
-    
+
     // Update last check time
     update_option('price_updates_last_check', current_time('timestamp'));
-    
+
     // Log the generation
     error_log(sprintf(
-        'Generated %d URLs for price updates (max: %d, excluded pending: %d, priority recent: %s)', 
-        count($urls), 
-        $max_urls, 
+        'Generated %d URLs for price updates (max: %d, excluded pending: %d, priority recent: %s)',
+        count($urls),
+        $max_urls,
         count($exclude_pending_ids),
         $priority_recent ? 'yes' : 'no'
     ));
-    
+
     return $urls;
 }
 
@@ -242,7 +250,7 @@ function handle_approve_price_update()
             // ✅ ADD DISCOUNT PERCENTAGE AND TAG UPDATE
             $current_discount = floatval($pending_data['discount_price']);
             $current_original = get_post_meta($post_id, '_original_price', true);
-            
+
             // If we updated both prices, use the new original price
             if ($update_both && isset($pending_data['original_price'])) {
                 $current_original = floatval($pending_data['original_price']);
@@ -254,30 +262,30 @@ function handle_approve_price_update()
             if ($current_original > 0 && $current_discount > 0 && $current_original > $current_discount) {
                 $discount_percentage = (($current_original - $current_discount) / $current_original) * 100;
                 $discount_percentage = round($discount_percentage);
-                
+
                 // Update discount percentage meta
                 update_post_meta($post_id, '_discount_percentage', $discount_percentage);
-                
+
                 // Update discount tag
                 $discount_tag_title = $discount_percentage . '% off';
-                
+
                 // Remove old discount tags first
                 $existing_tags = wp_get_post_terms($post_id, 'post_tag', array('fields' => 'names'));
                 $tags_to_keep = array();
-                
+
                 foreach ($existing_tags as $tag_name) {
                     // Keep tags that don't match the "X% off" pattern
                     if (!preg_match('/^\d+% off$/', $tag_name)) {
                         $tags_to_keep[] = $tag_name;
                     }
                 }
-                
+
                 // Add the new discount tag
                 $tags_to_keep[] = $discount_tag_title;
-                
+
                 // Set the updated tags
                 wp_set_post_terms($post_id, $tags_to_keep, 'post_tag', false);
-                
+
                 error_log("Manual approval: Updated discount tag for post {$post_id} to '{$discount_tag_title}'");
             }
 
@@ -294,43 +302,44 @@ function handle_approve_price_update()
     exit;
 }
 
-function update_discount_percentage_and_tag($post_id) {
+function update_discount_percentage_and_tag($post_id)
+{
     $discount_price = get_post_meta($post_id, '_discount_price', true);
     $original_price = get_post_meta($post_id, '_original_price', true);
-    
+
     $discount_price = floatval($discount_price);
     $original_price = floatval($original_price);
-    
+
     if ($original_price > 0 && $discount_price > 0 && $original_price > $discount_price) {
         $discount_percentage = (($original_price - $discount_price) / $original_price) * 100;
         $discount_percentage = round($discount_percentage);
-        
+
         // Update discount percentage meta
         update_post_meta($post_id, '_discount_percentage', $discount_percentage);
-        
+
         // Update discount tag
         $discount_tag_title = $discount_percentage . '% off';
-        
+
         // Remove old discount tags first
         $existing_tags = wp_get_post_terms($post_id, 'post_tag', array('fields' => 'names'));
         $tags_to_keep = array();
-        
+
         foreach ($existing_tags as $tag_name) {
             // Keep tags that don't match the "X% off" pattern
             if (!preg_match('/^\d+% off$/', $tag_name)) {
                 $tags_to_keep[] = $tag_name;
             }
         }
-        
+
         // Add the new discount tag
         $tags_to_keep[] = $discount_tag_title;
-        
+
         // Set the updated tags
         wp_set_post_terms($post_id, $tags_to_keep, 'post_tag', false);
-        
+
         return $discount_percentage;
     }
-    
+
     return 0;
 }
 
@@ -410,7 +419,7 @@ function check_price_update_rate_limit($request)
     $rate_limit_key = 'price_update_rate_' . md5($client_ip);
     $requests = get_transient($rate_limit_key) ?: 0;
 
-    $hourly_limit = 200;
+    $hourly_limit = 500;
 
     if ($requests >= $hourly_limit) {
         error_log('Rate limit exceeded for IP: ' . $client_ip . ' (Requests: ' . $requests . ')');
@@ -530,6 +539,7 @@ function update_price_api_secure($request)
         $result = process_price_update_api($post_id, $price_data);
 
         remove_from_pending_updates($post_id);
+        error_log('DEBUG - scraper_errors check: ' . print_r($params['scraper_errors'] ?? 'NOT SET', true));
 
         // Log any errors from scraper
         if (isset($params['scraper_errors']) && !empty($params['scraper_errors'])) {
@@ -599,6 +609,7 @@ function update_price_api($request)
         $result = process_price_update_api($post_id, $price_data);
 
         remove_from_pending_updates($post_id);
+        error_log('DEBUG - scraper_errors check: ' . print_r($params['scraper_errors'] ?? 'NOT SET', true));
 
         // Log any errors from scraper
         if (isset($params['scraper_errors']) && !empty($params['scraper_errors'])) {
@@ -624,10 +635,11 @@ function update_price_api($request)
     }
 }
 
-function display_pending_approval_products() {
+function display_pending_approval_products()
+{
     // Get sorting preference
     $sort_by = isset($_GET['approval_sort']) ? sanitize_text_field($_GET['approval_sort']) : 'timestamp_desc';
-    
+
     // Base query
     $args = array(
         'post_type' => 'post',
@@ -640,7 +652,7 @@ function display_pending_approval_products() {
             )
         )
     );
-    
+
     // Add ordering based on selection
     switch ($sort_by) {
         case 'timestamp_desc':
@@ -677,7 +689,7 @@ function display_pending_approval_products() {
     }
 
     $approval_query = new WP_Query($args);
-    
+
     // For custom sorting by price change magnitude, we'll need to sort after query
     $posts_with_changes = array();
     if ($approval_query->have_posts()) {
@@ -685,7 +697,7 @@ function display_pending_approval_products() {
             $approval_query->the_post();
             $post_id = get_the_ID();
             $pending_data = get_post_meta($post_id, '_pending_price_data', true);
-            
+
             if ($pending_data) {
                 $discount_change = isset($pending_data['discount_price_change']) ? abs(floatval($pending_data['discount_price_change'])) : 0;
                 $posts_with_changes[] = array(
@@ -696,14 +708,14 @@ function display_pending_approval_products() {
             }
         }
         wp_reset_postdata();
-        
+
         // Sort by change magnitude if requested
         if ($sort_by === 'change_magnitude_desc') {
-            usort($posts_with_changes, function($a, $b) {
+            usort($posts_with_changes, function ($a, $b) {
                 return $b['change_magnitude'] <=> $a['change_magnitude'];
             });
         } elseif ($sort_by === 'change_magnitude_asc') {
-            usort($posts_with_changes, function($a, $b) {
+            usort($posts_with_changes, function ($a, $b) {
                 return $a['change_magnitude'] <=> $b['change_magnitude'];
             });
         }
@@ -714,7 +726,7 @@ function display_pending_approval_products() {
         <div style="background: #fff3cd; padding: 10px; margin-bottom: 15px; border-left: 4px solid #ffc107;">
             <strong>⚠️ Important:</strong> Posts awaiting approval are excluded from price update requests until resolved.
         </div>
-        
+
         <!-- Sorting Controls -->
         <div style="background: #f8f9fa; padding: 12px; margin-bottom: 15px; border: 1px solid #dee2e6; border-radius: 4px;">
             <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
@@ -738,7 +750,7 @@ function display_pending_approval_products() {
                 </form>
             </div>
         </div>
-        
+
         <table class="wp-list-table widefat fixed striped">
             <thead>
                 <tr>
@@ -758,7 +770,7 @@ function display_pending_approval_products() {
                 foreach ($posts_with_changes as $post_data) {
                     $post_id = $post_data['post_id'];
                     $pending_data = $post_data['pending_data'];
-                    
+
                     $post = get_post($post_id);
                     if (!$post) continue;
 
@@ -773,7 +785,7 @@ function display_pending_approval_products() {
                     if ($current_original > 0 && $current_discount > 0) {
                         $current_discount_percent = round((($current_original - $current_discount) / $current_original) * 100);
                     }
-                    
+
                     $new_discount_percent = 0;
                     if ($new_original > 0 && $new_discount > 0) {
                         $new_discount_percent = round((($new_original - $new_discount) / $new_original) * 100);
@@ -792,7 +804,7 @@ function display_pending_approval_products() {
                     // Get timestamp
                     $timestamp = isset($pending_data['timestamp']) ? $pending_data['timestamp'] : 0;
                     $date_formatted = $timestamp ? date_i18n('M j, H:i', $timestamp) : '';
-                    
+
                     // Determine if this is a good or bad change
                     $deal_getting_better = $new_discount_percent >= $current_discount_percent;
                     $row_class = $deal_getting_better ? 'good-deal' : 'bad-deal';
@@ -852,14 +864,14 @@ function display_pending_approval_products() {
                                     <small style="color: #721c24; font-weight: bold;">⚠ Deal Worsening</small>
                                 </div>
                             <?php endif; ?>
-                            
-                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=approve_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('approve_price_update'))); ?>" 
-                               class="button-primary button-small" style="margin-bottom: 2px; <?php echo $deal_getting_better ? '' : 'background: #28a745; border-color: #28a745;'; ?>">
-                               ✓ Approve
+
+                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=approve_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('approve_price_update'))); ?>"
+                                class="button-primary button-small" style="margin-bottom: 2px; <?php echo $deal_getting_better ? '' : 'background: #28a745; border-color: #28a745;'; ?>">
+                                ✓ Approve
                             </a><br>
-                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=reject_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('reject_price_update'))); ?>" 
-                               class="button button-small" style="<?php echo !$deal_getting_better ? 'background: #dc3545; color: white; border-color: #dc3545;' : ''; ?>">
-                               ✗ Reject & Archive
+                            <a href="<?php echo esc_url(admin_url('admin-post.php?action=reject_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('reject_price_update'))); ?>"
+                                class="button button-small" style="<?php echo !$deal_getting_better ? 'background: #dc3545; color: white; border-color: #dc3545;' : ''; ?>">
+                                ✗ Reject & Archive
                             </a>
                         </td>
                     </tr>
@@ -868,24 +880,27 @@ function display_pending_approval_products() {
                 ?>
             </tbody>
         </table>
-        
+
         <style>
-        .good-deal {
-            background-color: #f8fff8 !important;
-        }
-        .bad-deal {
-            background-color: #fff8f8 !important;
-        }
-        .price-decrease {
-            color: #28a745;
-            font-weight: bold;
-        }
-        .price-increase {
-            color: #dc3545;
-            font-weight: bold;
-        }
+            .good-deal {
+                background-color: #f8fff8 !important;
+            }
+
+            .bad-deal {
+                background-color: #fff8f8 !important;
+            }
+
+            .price-decrease {
+                color: #28a745;
+                font-weight: bold;
+            }
+
+            .price-increase {
+                color: #dc3545;
+                font-weight: bold;
+            }
         </style>
-        
+
         <div style="margin-top: 15px; background: #f0f8ff; padding: 15px; border-left: 4px solid #0073aa;">
             <h4 style="margin-top: 0;">📊 How to Read This Table:</h4>
             <div style="display: flex; gap: 30px;">
@@ -906,7 +921,7 @@ function display_pending_approval_products() {
                     </ul>
                 </div>
             </div>
-            
+
             <div style="margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 4px;">
                 <h5 style="margin: 0 0 5px 0;">💡 Decision Guidelines:</h5>
                 <ul style="margin: 5px 0 0 20px; font-size: 13px;">
@@ -916,7 +931,7 @@ function display_pending_approval_products() {
                 </ul>
             </div>
         </div>
-        
+
         <div style="margin-top: 10px;">
             <p><strong>Actions:</strong></p>
             <ul>
@@ -924,7 +939,7 @@ function display_pending_approval_products() {
                 <li><strong>✗ Reject & Archive:</strong> Move post to archive category with "deal no longer available" message</li>
             </ul>
         </div>
-    <?php
+        <?php
     } else {
         echo '<p>✅ No products currently need approval.</p>';
     }
@@ -935,58 +950,86 @@ function display_pending_approval_products() {
  */
 function display_recent_price_updates()
 {
-    $args = array(
-        'post_type' => 'post',
-        'posts_per_page' => 10,
-        'meta_key' => '_last_price_check',
-        'orderby' => 'meta_value_num',
-        'order' => 'DESC',
-    );
+    global $wpdb;
 
-    $recent_updates = new WP_Query($args);
+    // UPDATED: Get recent updates with dual-taxonomy filter
+    $recent_post_ids = $wpdb->get_col("
+        SELECT DISTINCT p.ID
+        FROM {$wpdb->posts} p
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
+        INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_last_price_check'
+        WHERE p.post_type = 'post'
+        AND p.post_status = 'publish'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
+        ORDER BY pm.meta_value DESC
+        LIMIT 10
+    ");
 
-    if ($recent_updates->have_posts()) {
-    ?>
-        <table class="wp-list-table widefat fixed striped">
-            <thead>
-                <tr>
-                    <th>Post Title</th>
-                    <th>Current Price</th>
-                    <th>Last Updated</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php
-                while ($recent_updates->have_posts()) {
-                    $recent_updates->the_post();
-                    $post_id = get_the_ID();
+    if (!empty($recent_post_ids)) {
+        // Use standard WP_Query with post__in for the final display
+        $args = array(
+            'post_type' => 'post',
+            'post__in' => $recent_post_ids,
+            'orderby' => 'post__in',
+            'posts_per_page' => 10
+        );
 
-                    $current_price = get_post_meta($post_id, '_discount_price', true);
-                    $last_check = get_post_meta($post_id, '_last_price_check', true);
-                    $last_check_formatted = $last_check ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $last_check) : 'Never';
-                ?>
+        $recent_updates = new WP_Query($args);
+
+        if ($recent_updates->have_posts()) {
+        ?>
+            <table class="wp-list-table widefat fixed striped">
+                <thead>
                     <tr>
-                        <td><a href="<?php echo get_edit_post_link($post_id); ?>"><?php the_title(); ?></a></td>
-                        <td><?php echo number_format($current_price, 2); ?> SEK</td>
-                        <td><?php echo $last_check_formatted; ?></td>
-                        <td>
-                            <a href="<?php echo get_permalink($post_id); ?>" class="button" target="_blank">View Post</a>
-                            <a href="<?php echo admin_url('admin-post.php?action=force_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('force_price_update')); ?>" class="button">Check Now</a>
-                        </td>
+                        <th>Post Title</th>
+                        <th>Current Price</th>
+                        <th>Last Updated</th>
+                        <th>Actions</th>
                     </tr>
-                <?php
-                }
-                ?>
-            </tbody>
-        </table>
-    <?php
-    } else {
-        echo '<p>No recent price updates found.</p>';
-    }
+                </thead>
+                <tbody>
+                    <?php
+                    while ($recent_updates->have_posts()) {
+                        $recent_updates->the_post();
+                        $post_id = get_the_ID();
 
-    wp_reset_postdata();
+                        $current_price = get_post_meta($post_id, '_discount_price', true);
+                        $last_check = get_post_meta($post_id, '_last_price_check', true);
+                        $last_check_formatted = $last_check ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $last_check) : 'Never';
+                    ?>
+                        <tr>
+                            <td><a href="<?php echo get_edit_post_link($post_id); ?>"><?php the_title(); ?></a></td>
+                            <td><?php echo number_format($current_price, 2); ?> SEK</td>
+                            <td><?php echo $last_check_formatted; ?></td>
+                            <td>
+                                <a href="<?php echo get_permalink($post_id); ?>" class="button" target="_blank">View Post</a>
+                                <a href="<?php echo admin_url('admin-post.php?action=force_price_update&post_id=' . $post_id . '&_wpnonce=' . wp_create_nonce('force_price_update')); ?>" class="button">Check Now</a>
+                            </td>
+                        </tr>
+                    <?php
+                    }
+                    ?>
+                </tbody>
+            </table>
+    <?php
+        } else {
+            echo '<p>No recent price updates found.</p>';
+        }
+
+        wp_reset_postdata();
+    } else {
+        echo '<p>No recent price updates found in active-deals category.</p>';
+    }
 }
+
 
 /**
  * Add action handler for forcing price updates
@@ -1126,7 +1169,7 @@ function price_updates_admin_notices()
     $pending_updates = get_option('pending_price_updates', array());
     $pending_count = count($pending_updates);
 
-    // Check for errors
+    // Check for errors - but only show if there are actually errors to report
     $error_args = array(
         'post_type' => 'post',
         'posts_per_page' => -1,
@@ -1146,7 +1189,7 @@ function price_updates_admin_notices()
 ?>
     <div class="notice notice-info is-dismissible">
         <p>
-            <strong>Price Update Status:</strong>
+            <strong>Price Update Status (Active-Deals Only):</strong>
             <?php if ($pending_count > 0): ?>
                 There <?php echo $pending_count === 1 ? 'is' : 'are'; ?>
                 <strong><?php echo $pending_count; ?></strong> pending price update request<?php echo $pending_count === 1 ? '' : 's'; ?>.
@@ -1168,21 +1211,43 @@ function price_updates_admin_notices()
 
 function display_price_update_errors()
 {
+    global $wpdb;
+
+    // UPDATED: Get error posts that are also in active-deals category
+    $error_post_ids = $wpdb->get_col("
+        SELECT DISTINCT p.ID
+        FROM {$wpdb->posts} p
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
+        INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_price_update_errors'
+        WHERE p.post_type = 'post'
+        AND p.post_status = 'publish'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
+        ORDER BY p.post_modified DESC
+        LIMIT 10
+    ");
+
+    if (empty($error_post_ids)) {
+        echo '<p>No recent price update errors found in active-deals posts.</p>';
+        return;
+    }
+
+    // Use WP_Query for the final display
     $args = array(
         'post_type' => 'post',
-        'posts_per_page' => 10,
-        'meta_key' => '_price_update_errors',
-        'meta_compare' => 'EXISTS',
-        'orderby' => 'modified',
-        'order' => 'DESC',
+        'post__in' => $error_post_ids,
+        'orderby' => 'post__in',
+        'posts_per_page' => 10
     );
 
     $error_query = new WP_Query($args);
-
-    if (!$error_query->have_posts()) {
-        echo '<p>No recent price update errors found.</p>';
-        return;
-    }
 
 ?>
     <table class="wp-list-table widefat fixed striped">
@@ -1245,73 +1310,74 @@ function handle_clear_price_errors()
 }
 
 add_action('ai_integration_tab_content', 'price_updates_admin_tools');
-function price_updates_admin_tools() {
+function price_updates_admin_tools()
+{
     $active_tab = isset($_GET['tab']) ? $_GET['tab'] : 'general';
-    
+
     if ($active_tab != 'price_updates') {
         return;
     }
-    
+
     // Handle reset actions
     if (isset($_POST['reset_all_timestamps']) && wp_verify_nonce($_POST['admin_tools_nonce'], 'admin_tools_action')) {
         reset_all_price_check_timestamps();
         echo '<div class="updated fade"><p><strong>✅ All price check timestamps reset. Next scraper run will be clean.</strong></p></div>';
     }
-    
+
     if (isset($_POST['reset_pending_only']) && wp_verify_nonce($_POST['admin_tools_nonce'], 'admin_tools_action')) {
         update_option('pending_price_updates', array());
         echo '<div class="updated fade"><p><strong>✅ Pending updates list cleared.</strong></p></div>';
     }
-    
+
     if (isset($_POST['fix_missing_timestamps']) && wp_verify_nonce($_POST['admin_tools_nonce'], 'admin_tools_action')) {
         $fixed_count = fix_missing_price_check_timestamps();
         echo '<div class="updated fade"><p><strong>✅ Added timestamps to ' . $fixed_count . ' posts that were missing them.</strong></p></div>';
     }
-    
-    ?>
+
+?>
     <hr>
     <h2>🛠️ Admin Tools & Priority Settings</h2>
-    
+
     <div style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107; margin-bottom: 20px;">
         <h3 style="margin-top: 0;">⚠️ Diagnostic Information</h3>
         <?php display_priority_diagnostics(); ?>
     </div>
-    
+
     <form method="post" action="">
         <?php wp_nonce_field('admin_tools_action', 'admin_tools_nonce'); ?>
-        
+
         <h3>🔄 One-Time Reset Tools</h3>
         <table class="form-table">
             <tr valign="top">
                 <th scope="row">Complete Reset</th>
                 <td>
-                    <input type="submit" name="reset_all_timestamps" class="button button-secondary" 
-                           value="🔄 Reset All Price Check Timestamps" 
-                           onclick="return confirm('This will mark ALL Amazon posts as recently checked, preventing them from being scraped until their next scheduled update. Continue?')" />
+                    <input type="submit" name="reset_all_timestamps" class="button button-secondary"
+                        value="🔄 Reset All Price Check Timestamps"
+                        onclick="return confirm('This will mark ALL Amazon posts as recently checked, preventing them from being scraped until their next scheduled update. Continue?')" />
                     <p class="description">
                         <strong>Use when:</strong> You have too many stale pending updates and want a clean slate.<br>
                         <strong>Effect:</strong> All posts will be excluded from next scraper run. Useful for fixing the 1200+ pending issue.
                     </p>
                 </td>
             </tr>
-            
+
             <tr valign="top">
                 <th scope="row">Clear Pending Only</th>
                 <td>
-                    <input type="submit" name="reset_pending_only" class="button button-secondary" 
-                           value="🗑️ Clear Pending Updates List" />
+                    <input type="submit" name="reset_pending_only" class="button button-secondary"
+                        value="🗑️ Clear Pending Updates List" />
                     <p class="description">
                         <strong>Use when:</strong> You want to clear the pending list but keep normal update schedule.<br>
                         <strong>Effect:</strong> Clears tracking but posts may immediately re-appear if they need updates.
                     </p>
                 </td>
             </tr>
-            
+
             <tr valign="top">
                 <th scope="row">Fix Missing Data</th>
                 <td>
-                    <input type="submit" name="fix_missing_timestamps" class="button button-secondary" 
-                           value="🔧 Add Missing Timestamps" />
+                    <input type="submit" name="fix_missing_timestamps" class="button button-secondary"
+                        value="🔧 Add Missing Timestamps" />
                     <p class="description">
                         <strong>Use when:</strong> Some posts are missing _last_price_check metadata.<br>
                         <strong>Effect:</strong> Adds current timestamp to posts missing this data.
@@ -1320,209 +1386,264 @@ function price_updates_admin_tools() {
             </tr>
         </table>
     </form>
-    
+
     <hr>
-    
+
     <h3>⚙️ Priority Settings</h3>
     <form method="post" action="">
         <?php wp_nonce_field('priority_settings_action', 'priority_settings_nonce'); ?>
-        
+
         <?php
         // Handle priority settings save
         if (isset($_POST['save_priority_settings']) && wp_verify_nonce($_POST['priority_settings_nonce'], 'priority_settings_action')) {
             $priority_options = isset($_POST['priority_options']) ? $_POST['priority_options'] : array();
-            update_option('price_update_priority_options', $priority_options);
+
+            // FIXED: Explicitly handle checkboxes (they don't send values when unchecked)
+            $cleaned_options = array();
+            $cleaned_options['max_urls_per_request'] = isset($priority_options['max_urls_per_request']) ? intval($priority_options['max_urls_per_request']) : 100;
+            $cleaned_options['min_request_interval'] = isset($priority_options['min_request_interval']) ? intval($priority_options['min_request_interval']) : 2;
+
+            // For checkboxes: if key exists in POST data = checked (1), if not exists = unchecked (0)
+            $cleaned_options['priority_recent_posts'] = isset($priority_options['priority_recent_posts']) ? 1 : 0;
+            $cleaned_options['prevent_duplicate_requests'] = isset($priority_options['prevent_duplicate_requests']) ? 1 : 0;
+
+            update_option('price_update_priority_options', $cleaned_options);
             echo '<div class="updated fade"><p><strong>Priority settings saved.</strong></p></div>';
         }
-        
+
         $priority_options = get_option('price_update_priority_options', array());
         $max_urls_per_request = isset($priority_options['max_urls_per_request']) ? intval($priority_options['max_urls_per_request']) : 100;
-        $priority_recent_posts = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 1;
-        $prevent_duplicate_requests = isset($priority_options['prevent_duplicate_requests']) ? intval($priority_options['prevent_duplicate_requests']) : 1;
+        $priority_recent_posts = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 0;
+        $prevent_duplicate_requests = isset($priority_options['prevent_duplicate_requests']) ? intval($priority_options['prevent_duplicate_requests']) : 0;
         $min_request_interval = isset($priority_options['min_request_interval']) ? intval($priority_options['min_request_interval']) : 2;
         ?>
-        
+
         <table class="form-table">
             <tr valign="top">
                 <th scope="row">Maximum URLs per Request</th>
                 <td>
-                    <input type="number" name="priority_options[max_urls_per_request]" 
-                           value="<?php echo esc_attr($max_urls_per_request); ?>" min="10" max="500" />
+                    <input type="number" name="priority_options[max_urls_per_request]"
+                        value="<?php echo esc_attr($max_urls_per_request); ?>" min="10" max="500" />
                     <p class="description">Limit how many URLs are returned in a single request. Prevents overwhelming the scraper.</p>
                 </td>
             </tr>
-            
+
             <tr valign="top">
                 <th scope="row">Prioritize Recent Posts</th>
                 <td>
                     <label>
-                        <input type="checkbox" name="priority_options[priority_recent_posts]" 
-                               value="1" <?php checked($priority_recent_posts, 1); ?> />
+                        <input type="checkbox" name="priority_options[priority_recent_posts]"
+                            value="1" <?php checked($priority_recent_posts, 1); ?> />
                         Give priority to posts published in the last 30 days
                     </label>
                     <p class="description">Recent posts get checked first, older posts get checked later.</p>
                 </td>
             </tr>
-            
+
             <tr valign="top">
                 <th scope="row">Prevent Duplicate Requests</th>
                 <td>
                     <label>
-                        <input type="checkbox" name="priority_options[prevent_duplicate_requests]" 
-                               value="1" <?php checked($prevent_duplicate_requests, 1); ?> />
+                        <input type="checkbox" name="priority_options[prevent_duplicate_requests]"
+                            value="1" <?php checked($prevent_duplicate_requests, 1); ?> />
                         Skip posts that are already pending or were requested recently
                     </label>
                     <p class="description">Prevents the same post from being requested multiple times.</p>
                 </td>
             </tr>
-            
+
             <tr valign="top">
                 <th scope="row">Minimum Request Interval (hours)</th>
                 <td>
-                    <input type="number" name="priority_options[min_request_interval]" 
-                           value="<?php echo esc_attr($min_request_interval); ?>" min="1" max="24" />
+                    <input type="number" name="priority_options[min_request_interval]"
+                        value="<?php echo esc_attr($min_request_interval); ?>" min="1" max="24" />
                     <p class="description">Minimum time between requests for the same post, even if scraper doesn't respond.</p>
                 </td>
             </tr>
         </table>
-        
+
         <p class="submit">
             <input type="submit" name="save_priority_settings" class="button-primary" value="Save Priority Settings" />
         </p>
     </form>
-    
-    <?php
+
+<?php
 }
 
-function display_priority_diagnostics() {
+function display_priority_diagnostics()
+{
     global $wpdb;
-    
-    // Count total Amazon posts
+
+    // UPDATED: Count total Amazon active-deals posts
     $total_amazon_posts = $wpdb->get_var("
         SELECT COUNT(DISTINCT p.ID) 
         FROM {$wpdb->posts} p
-        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-        INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
         WHERE p.post_type = 'post' 
         AND p.post_status = 'publish'
-        AND tt.taxonomy = 'store_type'
-        AND t.slug = 'amazon'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
     ");
-    
-    // Count posts needing updates
+
+    // UPDATED: Count posts needing updates with dual-taxonomy filter
     $options = get_option('price_updates_options', array());
     $update_frequency = isset($options['update_frequency']) ? intval($options['update_frequency']) : 24;
     $cutoff_time = current_time('timestamp') - ($update_frequency * HOUR_IN_SECONDS);
-    
+
     $posts_needing_updates = $wpdb->get_var($wpdb->prepare("
         SELECT COUNT(DISTINCT p.ID)
         FROM {$wpdb->posts} p
-        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-        INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
         LEFT JOIN {$wpdb->postmeta} pm1 ON p.ID = pm1.post_id AND pm1.meta_key = '_last_price_check'
         LEFT JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id AND pm2.meta_key = '_disable_price_updates'
         LEFT JOIN {$wpdb->postmeta} pm3 ON p.ID = pm3.post_id AND pm3.meta_key = '_needs_price_validation'
         WHERE p.post_type = 'post'
         AND p.post_status = 'publish'
-        AND tt.taxonomy = 'store_type'
-        AND t.slug = 'amazon'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
         AND (pm1.meta_value IS NULL OR pm1.meta_value < %s)
         AND (pm2.meta_value IS NULL OR pm2.meta_value != '1')
         AND (pm3.meta_value IS NULL OR pm3.meta_value != '1')
     ", $cutoff_time));
-    
+
     // Count currently pending
     $pending_updates = get_option('pending_price_updates', array());
     $pending_count = count($pending_updates);
-    
-    // Count posts missing timestamps
+
+    // UPDATED: Count posts missing timestamps with dual-taxonomy filter
     $missing_timestamps = $wpdb->get_var("
         SELECT COUNT(DISTINCT p.ID)
         FROM {$wpdb->posts} p
-        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-        INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
         LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_last_price_check'
         WHERE p.post_type = 'post'
         AND p.post_status = 'publish'
-        AND tt.taxonomy = 'store_type'
-        AND t.slug = 'amazon'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
         AND pm.meta_value IS NULL
     ");
-    
+
     echo '<table class="wp-list-table widefat fixed striped" style="max-width: 600px;">';
     echo '<tr><th>Metric</th><th>Count</th><th>Status</th></tr>';
-    echo '<tr><td><strong>Total Amazon Posts</strong></td><td>' . $total_amazon_posts . '</td><td>📊 Reference</td></tr>';
+    echo '<tr><td><strong>Total Amazon Active-Deals Posts</strong></td><td>' . $total_amazon_posts . '</td><td>📊 Reference</td></tr>';
     echo '<tr><td><strong>Posts Needing Updates</strong></td><td>' . $posts_needing_updates . '</td><td>' . ($posts_needing_updates > 200 ? '⚠️ High' : '✅ Normal') . '</td></tr>';
     echo '<tr><td><strong>Currently Pending</strong></td><td>' . $pending_count . '</td><td>' . ($pending_count > 100 ? '🔴 Too High' : '✅ OK') . '</td></tr>';
     echo '<tr><td><strong>Missing Timestamps</strong></td><td>' . $missing_timestamps . '</td><td>' . ($missing_timestamps > 0 ? '🔧 Needs Fix' : '✅ Clean') . '</td></tr>';
     echo '</table>';
-    
+
     if ($pending_count > $total_amazon_posts) {
         echo '<p style="color: #d63384; font-weight: bold;">⚠️ Warning: More pending updates than total posts suggests stale data!</p>';
     }
 }
 
-function reset_all_price_check_timestamps() {
+
+function reset_all_price_check_timestamps()
+{
     global $wpdb;
-    
+
     $current_timestamp = current_time('timestamp');
-    
-    // Update all Amazon posts
+
+    // UPDATED: Update only Amazon active-deals posts
     $updated = $wpdb->query($wpdb->prepare("
         UPDATE {$wpdb->postmeta} pm
         INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
-        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-        INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
         SET pm.meta_value = %s
         WHERE pm.meta_key = '_last_price_check'
         AND p.post_type = 'post'
         AND p.post_status = 'publish'
-        AND tt.taxonomy = 'store_type'
-        AND t.slug = 'amazon'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
     ", $current_timestamp));
-    
+
     // Clear pending updates
     update_option('pending_price_updates', array());
-    
-    // Clear any force update flags
-    $wpdb->query("DELETE FROM {$wpdb->postmeta} WHERE meta_key = '_force_price_update'");
-    
-    error_log("Reset timestamps for {$updated} Amazon posts and cleared pending updates");
-    
+
+    // UPDATED: Clear force update flags only for active-deals posts
+    $force_flags_cleared = $wpdb->query("
+        DELETE pm FROM {$wpdb->postmeta} pm
+        INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
+        WHERE pm.meta_key = '_force_price_update'
+        AND p.post_type = 'post'
+        AND p.post_status = 'publish'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
+    ");
+
+    error_log("Reset timestamps for {$updated} Amazon active-deals posts, cleared pending updates, and removed {$force_flags_cleared} force update flags");
+
     return $updated;
 }
 
-function fix_missing_price_check_timestamps() {
+function fix_missing_price_check_timestamps()
+{
     global $wpdb;
-    
+
     $current_timestamp = current_time('timestamp');
-    
-    // Find Amazon posts missing timestamps and add them
+
+    // UPDATED: Find Amazon active-deals posts missing timestamps and add them
     $missing_posts = $wpdb->get_col("
         SELECT DISTINCT p.ID
         FROM {$wpdb->posts} p
-        INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
-        INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-        INNER JOIN {$wpdb->terms} t ON tt.term_id = t.term_id
+        INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t1 ON tt1.term_id = t1.term_id
+        INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
+        INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
+        INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
         LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_last_price_check'
         WHERE p.post_type = 'post'
         AND p.post_status = 'publish'
-        AND tt.taxonomy = 'store_type'
-        AND t.slug = 'amazon'
+        AND tt1.taxonomy = 'store_type'
+        AND t1.slug = 'amazon'
+        AND tt2.taxonomy = 'category'
+        AND t2.slug = 'active-deals'
         AND pm.meta_value IS NULL
     ");
-    
+
     $fixed_count = 0;
     foreach ($missing_posts as $post_id) {
         add_post_meta($post_id, '_last_price_check', $current_timestamp, true);
         $fixed_count++;
     }
-    
-    error_log("Added timestamps to {$fixed_count} posts that were missing them");
-    
+
+    error_log("Added timestamps to {$fixed_count} active-deals posts that were missing them");
+
     return $fixed_count;
 }

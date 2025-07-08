@@ -242,14 +242,6 @@ function ai_integration_page_content()
                 ?>
                 <form method="post">
                     <div class="prime_block_area">
-                        <label for="brand_selection">Brand Selection:</label>
-                        <select name="brand_selection" id="brand_selection">
-                            <?php foreach ($brands as $brand): ?>
-                                <option value="<?php echo esc_attr($brand->term_id); ?>"><?php echo esc_html($brand->name); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="prime_block_area">
                         <label>Add Title</label><BR />
                         <textarea id="prime_block_area" name="manual_post_title" rows="4" cols="70"></textarea>
                     </div>

@@ -296,16 +296,12 @@ function process_price_update_api($post_id, $price_data)
 }
 
 
+// FIXED archive_post function - Replace the entire function in price-rules-engine.php
 function archive_post($post_id, $reason, $archive_category_id)
 {
     // Record archiving metadata
     update_post_meta($post_id, '_archive_reason', $reason);
     update_post_meta($post_id, '_archived_date', current_time('timestamp'));
-
-    // Move to archive category if specified
-    if ($archive_category_id > 0) {
-        wp_set_post_categories($post_id, array($archive_category_id), false);
-    }
 
     $post = get_post($post_id);
 
@@ -316,54 +312,80 @@ function archive_post($post_id, $reason, $archive_category_id)
     $content = $post->post_content;
     $excerpt = $post->post_excerpt;
 
-    // Strike through prices in content
-    $new_content = preg_replace(
-        '/<span class="original-price">(.*?)<\/span><span class="discount-price">(.*?)<\/span>/',
-        '<span class="original-price"><s>$1</s></span><span class="discount-price"><s>$2</s></span>',
-        $content
-    );
+    // FIX #1: Check if archive notice already exists to prevent duplicates
+    $archive_notice_exists = strpos($content, '⚠️ Deal No Longer Available') !== false;
+    
+    if (!$archive_notice_exists) {
+        // Strike through prices in content (only if not already done)
+        $new_content = preg_replace(
+            '/<span class="original-price">(.*?)<\/span><span class="discount-price">(.*?)<\/span>/',
+            '<span class="original-price"><s>$1</s></span><span class="discount-price"><s>$2</s></span>',
+            $content
+        );
 
-    // Strike through prices in excerpt
-    $new_excerpt = preg_replace(
-        '/<span class="original-price">(.*?)<\/span> <span class="discount-price">(.*?)<\/span>/',
-        '<span class="original-price"><s>$1</s></span> <span class="discount-price"><s>$2</s></span>',
-        $excerpt
-    );
+        // Strike through prices in excerpt (only if not already done)
+        $new_excerpt = preg_replace(
+            '/<span class="original-price">(.*?)<\/span> <span class="discount-price">(.*?)<\/span>/',
+            '<span class="original-price"><s>$1</s></span> <span class="discount-price"><s>$2</s></span>',
+            $excerpt
+        );
 
-    // Create user-friendly archive notice based on reason
-    $user_message = '';
-    switch ($reason) {
-        case 'Out of stock':
-            $user_message = 'This product is currently out of stock.';
-            break;
-        case 'Price increase':
-            $user_message = 'This deal is no longer available due to price changes.';
-            break;
-        case 'Discount no longer available':
-            $user_message = 'This discount is no longer available.';
-            break;
-        default:
-            $user_message = 'This deal is no longer available.';
+        // Create user-friendly archive notice based on reason
+        $user_message = '';
+        switch ($reason) {
+            case 'Out of stock':
+                $user_message = 'This product is currently out of stock.';
+                break;
+            case 'Price increase':
+                $user_message = 'This deal is no longer available due to price changes.';
+                break;
+            case 'Discount no longer available':
+                $user_message = 'This discount is no longer available.';
+                break;
+            default:
+                $user_message = 'This deal is no longer available.';
+        }
+
+        // Add clean notice at top of content (only once)
+        $archive_notice = '<div style="background-color: #f8d7da; color: #721c24; padding: 15px; margin-bottom: 20px; border-radius: 4px; border-left: 4px solid #dc3545;">
+            <p style="margin: 0; font-weight: bold;">⚠️ Deal No Longer Available</p>
+            <p style="margin: 5px 0 0 0;">' . esc_html($user_message) . '</p>
+        </div>';
+
+        $new_content = $archive_notice . $new_content;
+
+        // Update the post content
+        wp_update_post(array(
+            'ID' => $post_id,
+            'post_content' => $new_content,
+            'post_excerpt' => $new_excerpt,
+            'post_modified' => current_time('mysql'),
+            'post_modified_gmt' => current_time('mysql', 1)
+        ));
     }
 
-    // Add clean notice at top of content
-    $archive_notice = '<div style="background-color: #f8d7da; color: #721c24; padding: 15px; margin-bottom: 20px; border-radius: 4px; border-left: 4px solid #dc3545;">
-        <p style="margin: 0; font-weight: bold;">⚠️ Deal No Longer Available</p>
-        <p style="margin: 5px 0 0 0;">' . esc_html($user_message) . '</p>
-    </div>';
+    // FIX #2: Properly handle category changes - REMOVE from active-deals and ADD to archive
+    
+    // Get current categories
+    $current_categories = wp_get_post_categories($post_id);
+    
+    // Remove active-deals category (find by slug)
+    $active_deals_cat = get_category_by_slug('active-deals');
+    if ($active_deals_cat) {
+        $current_categories = array_diff($current_categories, array($active_deals_cat->term_id));
+        error_log('Removed active-deals category from post ' . $post_id);
+    }
+    
+    // Add archive category if specified
+    if ($archive_category_id > 0) {
+        $current_categories[] = $archive_category_id;
+        error_log('Added archive category ' . $archive_category_id . ' to post ' . $post_id);
+    }
+    
+    // Update categories (this replaces all categories)
+    wp_set_post_categories($post_id, $current_categories);
 
-    $new_content = $archive_notice . $new_content;
-
-    // Update the post with timestamp
-    wp_update_post(array(
-        'ID' => $post_id,
-        'post_content' => $new_content,
-        'post_excerpt' => $new_excerpt,
-        'post_modified' => current_time('mysql'),
-        'post_modified_gmt' => current_time('mysql', 1)
-    ));
-
-    error_log('Archived post ' . $post_id . ' with reason: ' . $reason);
+    error_log('Archived post ' . $post_id . ' with reason: ' . $reason . ' - removed from active-deals');
 
     return 'archived';
 }

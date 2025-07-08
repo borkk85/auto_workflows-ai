@@ -159,7 +159,7 @@ function translate_content_with_google($content, $target_language = 'sv')
 }
 
 
-function create_manual_blog_using_given_title_create_blog($amazone_prod_basename, $blog_post_titles, $blog_post_descriptions, $manual_link, $discount_price, $org_price, $product_data, $brand_name, $image_url, $category_hierarchy, $product_category_id)
+function create_manual_blog_using_given_title_create_blog($amazone_prod_basename, $blog_post_titles, $blog_post_descriptions, $manual_link, $discount_price, $org_price, $product_data, $brand_name, $image_url, $category_hierarchy, $product_category_id, $update_both_prices = '1')
 {
 
     $prime_block_link = get_option('prime_block_link');
@@ -216,11 +216,8 @@ function create_manual_blog_using_given_title_create_blog($amazone_prod_basename
 
     if (!is_wp_error($newblog_post_id)) {
 
-        if (isset($_POST['update_both_prices']) && $_POST['update_both_prices'] == '0') {
-            update_post_meta($newblog_post_id, '_update_both_prices', '0');
-        } else {
-            update_post_meta($newblog_post_id, '_update_both_prices', '1');
-        }
+        // Use the corrected parameter
+        update_post_meta($newblog_post_id, '_update_both_prices', $update_both_prices);
 
         // Add the existing metadata
         if (isset($amazone_prod_basename) && !empty($amazone_prod_basename)) {
@@ -236,7 +233,6 @@ function create_manual_blog_using_given_title_create_blog($amazone_prod_basename
         update_post_meta($newblog_post_id, '_discount_price', $discount_price, true);
         update_post_meta($newblog_post_id, '_original_price', $original_price, true);
         update_post_meta($newblog_post_id, '_price_sources', $price_sources);
-        update_post_meta($newblog_post_id, '_update_both_prices', 0);
         update_post_meta($newblog_post_id, '_last_price_check', current_time('timestamp'));
 
         if ($image_url && !image_exists($image_url, $newblog_post_id)) {
@@ -245,77 +241,73 @@ function create_manual_blog_using_given_title_create_blog($amazone_prod_basename
                 set_post_thumbnail($newblog_post_id, $image_id);
             }
 
-            // FIX: Initialize variables that were causing undefined errors
+            // Initialize variables that were causing undefined errors
             $amazon_fr = '';
             $amazon_nl = '';
 
-            add_post_meta($newblog_post_id, '_discount_price', $discount_price, true);
             add_post_meta($newblog_post_id, 'amazon_fr', $amazon_fr, true);
             add_post_meta($newblog_post_id, 'amazon_nl', $amazon_nl, true);
-
-            if ($original_price > $discount_price) {
-                $discount_percentage = (($original_price - $discount_price) / $original_price) * 100;
-                $discount_percentage = round($discount_percentage);
-                error_log('Discount percentage: ' . $discount_percentage);
-                add_post_meta($newblog_post_id, '_discount_percentage', $discount_percentage, true);
-                $discount_tag_title = $discount_percentage . '% off';
-                error_log("Discount Tag Title to search/create: {$discount_tag_title}");
-
-                $term = term_exists($discount_tag_title, 'post_tag');
-                if (!$term) {
-                    $term = wp_insert_term($discount_tag_title, 'post_tag');
-                    error_log("Creating new tag: {$discount_tag_title}");
-                } else {
-                    error_log("Found existing tag for: {$discount_tag_title}");
-                }
-
-                if (!is_wp_error($term)) {
-                    wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', false);
-                    error_log("Assigned tag '{$discount_tag_title}' to post {$newblog_post_id}");
-                } else {
-                    error_log('Discount Tag Error: ' . $term->get_error_message());
-                }
-            } else {
-                error_log('No discount to apply or prices are incorrect.');
-            }
-
-            $store_type_taxonomy = 'store_type';
-            $product_categories_taxonomy = 'product_categories';
-
-            // FIX: Use the brand_name parameter properly
-            if (!empty($brand_name) && trim($brand_name) !== '') {
-                $brand_term_exists = term_exists($brand_name, $store_type_taxonomy);
-                if (!$brand_term_exists) {
-                    $brand_term = wp_insert_term($brand_name, $store_type_taxonomy);
-                    if (is_wp_error($brand_term)) {
-                        error_log('Error creating store type term: ' . $brand_term->get_error_message());
-                    }
-                }
-
-                if (isset($brand_term) && !is_wp_error($brand_term)) {
-                    $brand_term_id = $brand_term_exists ? $brand_term_exists['term_id'] : $brand_term['term_id'];
-                    wp_set_post_terms($newblog_post_id, [$brand_name], $store_type_taxonomy, false);
-                } else if ($brand_term_exists) {
-                    $brand_term_id = $brand_term_exists['term_id'];
-                    wp_set_post_terms($newblog_post_id, [$brand_name], $store_type_taxonomy, false);
-                }
-            } else {
-                error_log('Brand name is empty or invalid: ' . var_export($brand_name, true));
-            }
-
-            if (!empty($category_hierarchy)) {
-                $product_category_id = create_product_categories($category_hierarchy);
-                if ($product_category_id) {
-                    wp_set_post_terms($newblog_post_id, [$product_category_id], 'product_categories', false);
-                } else {
-                    error_log('Failed to create or find product category for: ' . $category_hierarchy);
-                }
-            }
-
-            echo '<p style="color:green">New Post has been created. Please <a href="' . get_the_permalink($newblog_post_id) . '" target="_blank">Visit</a> </p>';
-        } else {
-            return $newblog_post_id->get_error_message();
         }
+
+        // FIXED: Discount percentage and tag logic (outside image handling)
+        if ($original_price > $discount_price) {
+            $discount_percentage = (($original_price - $discount_price) / $original_price) * 100;
+            $discount_percentage = round($discount_percentage);
+            error_log('Discount percentage: ' . $discount_percentage);
+            update_post_meta($newblog_post_id, '_discount_percentage', $discount_percentage, true);
+            $discount_tag_title = $discount_percentage . '% off';
+            error_log("Discount Tag Title to search/create: {$discount_tag_title}");
+
+            $term = term_exists($discount_tag_title, 'post_tag');
+            if (!$term) {
+                $term = wp_insert_term($discount_tag_title, 'post_tag');
+                error_log("Creating new tag: {$discount_tag_title}");
+            } else {
+                error_log("Found existing tag for: {$discount_tag_title}");
+            }
+
+            if (!is_wp_error($term)) {
+                wp_set_post_terms($newblog_post_id, [$discount_tag_title], 'post_tag', false);
+                error_log("Assigned tag '{$discount_tag_title}' to post {$newblog_post_id}");
+            } else {
+                error_log('Discount Tag Error: ' . $term->get_error_message());
+            }
+        } else {
+            error_log('No discount to apply or prices are incorrect.');
+        }
+
+        // FIXED: Category assignment logic (restored from original working version)
+        // First, try to assign the dropdown category if provided
+        if (!empty($product_category_id)) {
+            wp_set_post_terms($newblog_post_id, [$product_category_id], 'product_categories', false);
+            error_log('Assigned dropdown category ID: ' . $product_category_id);
+        }
+
+        // FIXED: Store type assignment (Amazon)
+        $amazon_term = get_term_by('name', 'amazon', 'store_type');
+        if ($amazon_term) {
+            wp_set_post_terms($newblog_post_id, [$amazon_term->term_id], 'store_type', false);
+        } else {
+            $amazon_term = wp_insert_term('amazon', 'store_type');
+            if (!is_wp_error($amazon_term)) {
+                wp_set_post_terms($newblog_post_id, [$amazon_term['term_id']], 'store_type', false);
+            }
+        }
+
+        // FIXED: If no dropdown category was selected, try to create from text hierarchy
+        if (empty($product_category_id) && !empty($category_hierarchy)) {
+            $created_category_id = create_product_categories($category_hierarchy);
+            if ($created_category_id) {
+                wp_set_post_terms($newblog_post_id, [$created_category_id], 'product_categories', false);
+                error_log('Created and assigned text hierarchy category ID: ' . $created_category_id);
+            } else {
+                error_log('Failed to create or find product category for: ' . $category_hierarchy);
+            }
+        }
+
+        echo '<p style="color:green">New Post has been created. Please <a href="' . get_the_permalink($newblog_post_id) . '" target="_blank">Visit</a> </p>';
+    } else {
+        return $newblog_post_id->get_error_message();
     }
 }
 
@@ -410,35 +402,27 @@ function create_blog_using_given_title_create_blog($amazone_product_basename, $b
             }
         }
 
-        // Add category handling
-        if (!empty($categories)) {
-            $product_category_id = create_product_categories($categories);
-            if ($product_category_id) {
-                wp_set_post_terms($newblog_post_id, [$product_category_id], 'product_categories', false);
+        if (!empty($product_category_id)) {
+            wp_set_post_terms($newblog_post_id, [$product_category_id], 'product_categories', false);
+        }
+
+        $amazon_term = get_term_by('name', 'amazon', 'store_type');
+        if ($amazon_term) {
+            wp_set_post_terms($newblog_post_id, [$amazon_term->term_id], 'store_type', false);
+        } else {
+            $amazon_term = wp_insert_term('amazon', 'store_type');
+            if (!is_wp_error($amazon_term)) {
+                wp_set_post_terms($newblog_post_id, [$amazon_term['term_id']], 'store_type', false);
+            }
+        }
+
+        if (empty($product_category_id) && !empty($category_hierarchy)) {
+            $created_category_id = create_product_categories($category_hierarchy);
+            if ($created_category_id) {
+                wp_set_post_terms($newblog_post_id, [$created_category_id], 'product_categories', false);
             } else {
-                error_log('Failed to create or find product category for: ' . $categories);
+                error_log('Failed to create or find product category for: ' . $category_hierarchy);
             }
-        }
-
-        // Add store type (Amazon)
-        $store_type_taxonomy = 'store_type';
-        $product_categories_taxonomy = 'product_categories';
-
-
-        $brand_term_exists = term_exists($brand_name, $store_type_taxonomy);
-        if (!$brand_term_exists) {
-            $brand_term = wp_insert_term($brand_name, $store_type_taxonomy);
-            if (is_wp_error($brand_term)) {
-                error_log('Error creating store type term: ' . $brand_term->get_error_message());
-            }
-        }
-
-        if (isset($brand_term) && !is_wp_error($brand_term)) {
-            $brand_term_id = $brand_term_exists ? $brand_term_exists['term_id'] : $brand_term['term_id'];
-            wp_set_post_terms($newblog_post_id, [$brand_name], $store_type_taxonomy, false);
-        } else if ($brand_term_exists) {
-            $brand_term_id = $brand_term_exists['term_id'];
-            wp_set_post_terms($newblog_post_id, [$brand_name], $store_type_taxonomy, false);
         }
 
 
@@ -598,7 +582,7 @@ function check_amazone_product_name_exist_and_create_blog($amazone_product_basen
         // Add the new price tracking metadata that the price update system expects
         update_post_meta($newblog_post_id, '_original_price', $original_price, true);
         update_post_meta($newblog_post_id, '_price_sources', $price_sources);
-        update_post_meta($newblog_post_id, '_update_both_prices', 1);
+        update_post_meta($newblog_post_id, '_update_both_prices', '1');
         update_post_meta($newblog_post_id, '_last_price_check', current_time('timestamp'));
 
         if ($image_url && !image_exists($image_url, $newblog_post_id)) {
