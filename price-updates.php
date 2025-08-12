@@ -83,7 +83,7 @@ function generate_price_update_urls()
 
     $update_frequency = isset($options['update_frequency']) ? intval($options['update_frequency']) : 24;
     $max_urls = isset($priority_options['max_urls_per_request']) ? intval($priority_options['max_urls_per_request']) : 100;
-    $priority_recent = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 1;
+    $priority_recent = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 0; // Default to 0 now
     $prevent_duplicates = isset($priority_options['prevent_duplicate_requests']) ? intval($priority_options['prevent_duplicate_requests']) : 1;
     $min_interval_hours = isset($priority_options['min_request_interval']) ? intval($priority_options['min_request_interval']) : 2;
 
@@ -110,9 +110,10 @@ function generate_price_update_urls()
         $exclude_clause = 'AND p.ID NOT IN (' . implode(',', $exclude_pending_ids) . ')';
     }
 
-    // UPDATED: Base query for posts needing updates - now includes both store_type AND category filters
+    // Base query for posts needing updates
     $base_query = "
-        SELECT DISTINCT p.ID, p.post_date, pm_link.meta_value as amazon_url, pm_asin.meta_value as asin
+        SELECT DISTINCT p.ID, p.post_date, pm_link.meta_value as amazon_url, pm_asin.meta_value as asin,
+               pm_check.meta_value as last_check, pm_force.meta_value as force_update
         FROM {$wpdb->posts} p
         INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
         INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
@@ -144,28 +145,38 @@ function generate_price_update_urls()
         {$exclude_clause}
     ";
 
-    // Add ordering based on priority settings
-    if ($priority_recent) {
-        $thirty_days_ago = current_time('timestamp') - (30 * DAY_IN_SECONDS);
-        $base_query .= " ORDER BY 
-            CASE WHEN pm_force.meta_value = '1' THEN 1 ELSE 2 END,
-            CASE WHEN UNIX_TIMESTAMP(p.post_date) > {$thirty_days_ago} THEN 1 ELSE 2 END,
-            COALESCE(pm_check.meta_value, 0) ASC,
-            p.post_date DESC
-        ";
-    } else {
-        $base_query .= " ORDER BY 
-            CASE WHEN pm_force.meta_value = '1' THEN 1 ELSE 2 END,
-            COALESCE(pm_check.meta_value, 0) ASC,
-            p.ID ASC
-        ";
-    }
+    // IMPROVED ORDERING LOGIC FOR FAIR ROTATION
+    $base_query .= " ORDER BY 
+        CASE WHEN pm_force.meta_value = '1' THEN 0 ELSE 1 END,  -- Forced updates first
+        CASE WHEN pm_check.meta_value IS NULL THEN 0 ELSE 1 END,  -- Never checked posts second
+        COALESCE(pm_check.meta_value, 0) ASC,  -- Oldest checked posts next
+        p.ID ASC  -- Consistent ordering for same timestamp
+    ";
 
     // Add limit
     $base_query .= " LIMIT {$max_urls}";
 
     // Execute query
     $results = $wpdb->get_results($wpdb->prepare($base_query, $cutoff_time));
+
+    // Log what we're getting
+    $null_count = 0;
+    $old_count = 0;
+    $forced_count = 0;
+    
+    foreach ($results as $row) {
+        if ($row->force_update == '1') $forced_count++;
+        elseif ($row->last_check === null) $null_count++;
+        else $old_count++;
+    }
+    
+    error_log(sprintf(
+        'Price update URLs generated: %d total (Forced: %d, Never checked: %d, Old: %d)',
+        count($results),
+        $forced_count,
+        $null_count,
+        $old_count
+    ));
 
     $urls = array();
     $post_ids_to_track = array();
@@ -181,7 +192,7 @@ function generate_price_update_urls()
         $post_ids_to_track[] = intval($row->ID);
 
         // Clear force update flag if it was set
-        if (get_post_meta($row->ID, '_force_price_update', true) == '1') {
+        if ($row->force_update == '1') {
             delete_post_meta($row->ID, '_force_price_update');
         }
     }
@@ -193,15 +204,6 @@ function generate_price_update_urls()
 
     // Update last check time
     update_option('price_updates_last_check', current_time('timestamp'));
-
-    // Log the generation
-    error_log(sprintf(
-        'Generated %d URLs for price updates (max: %d, excluded pending: %d, priority recent: %s)',
-        count($urls),
-        $max_urls,
-        count($exclude_pending_ids),
-        $priority_recent ? 'yes' : 'no'
-    ));
 
     return $urls;
 }
@@ -507,12 +509,13 @@ function update_price_api_secure($request)
 {
     try {
         $start_time = microtime(true);
-        error_log('Secure price update API endpoint called');
-
+        
+        // Track request for diagnostics
+        update_option('last_scraper_request_time', current_time('timestamp'));
+        
         $params = $request->get_params();
-
+        
         if (!isset($params['post_id']) || !isset($params['price_data'])) {
-            error_log('Missing required parameters in price update request');
             return new WP_REST_Response(array(
                 'success' => false,
                 'error' => 'Missing required parameters: post_id and price_data'
@@ -521,11 +524,11 @@ function update_price_api_secure($request)
 
         $post_id = intval($params['post_id']);
         $price_data = $params['price_data'];
+        $scraper_errors = isset($params['scraper_errors']) ? $params['scraper_errors'] : array();
 
         // Verify post exists
         $post = get_post($post_id);
         if (!$post) {
-            error_log('Price update requested for non-existent post: ' . $post_id);
             return new WP_REST_Response(array(
                 'success' => false,
                 'error' => 'Post does not exist',
@@ -533,24 +536,87 @@ function update_price_api_secure($request)
             ), 404);
         }
 
-        error_log('Processing secure price update for post ' . $post_id . ' with data: ' . json_encode($price_data));
+        // Handle scraper errors with intelligent decision making
+        if (!empty($scraper_errors)) {
+            $result = handle_scraper_errors($post_id, $scraper_errors);
+            
+            if ($result['action'] === 'archive') {
+                $options = get_option('price_updates_options', array());
+                $archive_category = isset($options['archive_category']) ? intval($options['archive_category']) : 0;
+                archive_post($post_id, $result['reason'], $archive_category);
+                remove_from_pending_updates($post_id);
+                
+                return new WP_REST_Response(array(
+                    'success' => true,
+                    'post_id' => $post_id,
+                    'result' => 'archived',
+                    'message' => $result['reason']
+                ), 200);
+            } elseif ($result['action'] === 'retry') {
+                // Don't update timestamp, increment retry counter
+                $retry_count = get_post_meta($post_id, '_price_update_retry_count', true);
+                $retry_count = $retry_count ? intval($retry_count) + 1 : 1;
+                update_post_meta($post_id, '_price_update_retry_count', $retry_count);
+                
+                // Log the temporary error
+                log_price_update_error($post_id, $result['reason'], array(
+                    'scraper_errors' => $scraper_errors,
+                    'retry_count' => $retry_count
+                ));
+                
+                // Keep in pending for retry
+                return new WP_REST_Response(array(
+                    'success' => true,
+                    'post_id' => $post_id,
+                    'result' => 'retry_needed',
+                    'message' => $result['reason'],
+                    'retry_count' => $retry_count
+                ), 200);
+            }
+        }
+
+        // Handle empty price data
+        if (empty($price_data) || count($price_data) === 0) {
+            // If no errors reported, treat as temporary issue
+            if (empty($scraper_errors)) {
+                $retry_count = get_post_meta($post_id, '_price_update_retry_count', true);
+                $retry_count = $retry_count ? intval($retry_count) + 1 : 1;
+                update_post_meta($post_id, '_price_update_retry_count', $retry_count);
+                
+                log_price_update_error($post_id, 'Empty response - no data or errors', array(
+                    'retry_count' => $retry_count
+                ));
+                
+                return new WP_REST_Response(array(
+                    'success' => true,
+                    'post_id' => $post_id,
+                    'result' => 'retry_needed',
+                    'message' => 'Empty response, will retry',
+                    'retry_count' => $retry_count
+                ), 200);
+            }
+        }
 
         // Process the price update (using existing function)
         $result = process_price_update_api($post_id, $price_data);
-
-        remove_from_pending_updates($post_id);
-        error_log('DEBUG - scraper_errors check: ' . print_r($params['scraper_errors'] ?? 'NOT SET', true));
-
-        // Log any errors from scraper
-        if (isset($params['scraper_errors']) && !empty($params['scraper_errors'])) {
-            log_price_update_error($post_id, 'Scraper reported issues', $params['scraper_errors']);
+        
+        // Clear retry counter on success
+        if (in_array($result, ['price_updated', 'price_decreased', 'needs_approval'])) {
+            delete_post_meta($post_id, '_price_update_retry_count');
+            update_post_meta($post_id, '_last_successful_price_check', current_time('timestamp'));
         }
 
+        remove_from_pending_updates($post_id);
+        
         // Record the update attempt
         update_post_meta($post_id, '_last_price_update_attempt', current_time('timestamp'));
 
         $processing_time = round((microtime(true) - $start_time) * 1000, 2);
-        error_log('Secure price update completed for post ' . $post_id . ' with result: ' . $result . ' (Processing time: ' . $processing_time . 'ms)');
+        
+        // Track completion for diagnostics
+        update_option('last_scraper_completion_time', current_time('timestamp'));
+        $processed_count = get_option('last_scraper_processed_count', 0);
+        update_option('last_scraper_processed_count', $processed_count + 1);
 
         return new WP_REST_Response(array(
             'success' => true,
@@ -559,10 +625,10 @@ function update_price_api_secure($request)
             'message' => 'Price update processed successfully',
             'processing_time_ms' => $processing_time
         ), 200);
+        
     } catch (Exception $e) {
-        error_log('Exception in secure price update API: ' . $e->getMessage());
+        error_log('Exception in price update API: ' . $e->getMessage());
 
-        // Log the error if we have a post_id
         if (isset($post_id)) {
             log_price_update_error($post_id, $e->getMessage());
         }
@@ -575,6 +641,71 @@ function update_price_api_secure($request)
         ), 500);
     }
 }
+
+define('SCRAPER_ERROR_NOT_FOUND', 'product_not_found');
+define('SCRAPER_ERROR_UNAVAILABLE', 'temporarily_unavailable');
+
+function handle_scraper_errors($post_id, $scraper_errors) {
+    $retry_count = get_post_meta($post_id, '_price_update_retry_count', true);
+    $retry_count = $retry_count ? intval($retry_count) : 0;
+    
+    foreach ($scraper_errors as $error) {
+        if (is_array($error)) {
+            $error_type = isset($error['type']) ? $error['type'] : '';
+            $error_message = isset($error['message']) ? $error['message'] : '';
+        } else {
+            // Simple string error
+            $error_type = $error;
+            $error_message = $error;
+        }
+        
+        switch ($error_type) {
+            case SCRAPER_ERROR_NOT_FOUND:
+                // Product not found - archive immediately
+                return array(
+                    'action' => 'archive',
+                    'reason' => 'Product not found on Amazon'
+                );
+                break;
+                
+            case SCRAPER_ERROR_UNAVAILABLE:
+                // Price unavailable - archive immediately
+                return array(
+                    'action' => 'archive',
+                    'reason' => 'Product price unavailable'
+                );
+                break;
+                
+            default:
+                // Unknown error - still retry up to 5 times for unknown errors
+                if ($retry_count >= 5) {
+                    return array(
+                        'action' => 'archive',
+                        'reason' => 'Unknown error: ' . $error_message
+                    );
+                } else {
+                    return array(
+                        'action' => 'retry',
+                        'reason' => 'Unknown error - retry attempt ' . ($retry_count + 1)
+                    );
+                }
+        }
+    }
+    
+    // If we get here with no specific errors, retry a few times
+    if ($retry_count >= 3) {
+        return array(
+            'action' => 'archive',
+            'reason' => 'Multiple failures with no specific error'
+        );
+    }
+    
+    return array(
+        'action' => 'retry',
+        'reason' => 'Error encountered, will retry'
+    );
+}
+
 
 function get_price_update_urls_api()
 {
