@@ -177,6 +177,44 @@ function process_price_update_api($post_id, $price_data)
         return 'price_updated';
     }
 
+    if ($discount_price_change <= 0 && $new_deal_ratio <= 0.70) {
+        // Discount price is same or better AND deal is still good (30%+ off)
+        error_log('Smart auto-approval for post ' . $post_id . ': Discount unchanged/better (' . $discount_price_change . '%), deal still good (' . round((1 - $new_deal_ratio) * 100) . '% off)');
+
+        // Auto-update prices
+        update_post_meta($post_id, '_discount_price', $new_discount_price);
+
+        if ($update_both_prices) {
+            update_post_meta($post_id, '_original_price', $new_original_price);
+        }
+
+        update_post_meta($post_id, '_price_sources', $price_sources);
+        update_post_meta($post_id, '_last_price_check', current_time('timestamp'));
+
+        // Update discount percentage and tag
+        $discount_percentage = update_discount_percentage_and_tag($post_id);
+
+        if ($discount_percentage > 0) {
+            error_log("Smart auto-approval: Updated discount tag for post {$post_id} to '{$discount_percentage}% off'");
+        }
+
+        // Update HTML and timestamp
+        update_post_html_with_new_prices($post_id);
+        wp_update_post(array(
+            'ID' => $post_id,
+            'post_modified' => current_time('mysql'),
+            'post_modified_gmt' => current_time('mysql', 1)
+        ));
+
+        // Check if we should mark for resharing
+        if ($discount_price_change <= -$significant_decrease) {
+            update_post_meta($post_id, '_reshare_post', 1);
+            return 'price_decreased';
+        }
+
+        return 'price_updated';
+    }
+
     // Enhanced decision logic based on both old and new states
     $relevant_price_change = $discount_price_change;
     if ($update_both_prices && abs($original_price_change) > abs($discount_price_change)) {
@@ -314,7 +352,7 @@ function archive_post($post_id, $reason, $archive_category_id)
 
     // FIX #1: Check if archive notice already exists to prevent duplicates
     $archive_notice_exists = strpos($content, '⚠️ Deal No Longer Available') !== false;
-    
+
     if (!$archive_notice_exists) {
         // Strike through prices in content (only if not already done)
         $new_content = preg_replace(
@@ -365,23 +403,23 @@ function archive_post($post_id, $reason, $archive_category_id)
     }
 
     // FIX #2: Properly handle category changes - REMOVE from active-deals and ADD to archive
-    
+
     // Get current categories
     $current_categories = wp_get_post_categories($post_id);
-    
+
     // Remove active-deals category (find by slug)
     $active_deals_cat = get_category_by_slug('active-deals');
     if ($active_deals_cat) {
         $current_categories = array_diff($current_categories, array($active_deals_cat->term_id));
         error_log('Removed active-deals category from post ' . $post_id);
     }
-    
+
     // Add archive category if specified
     if ($archive_category_id > 0) {
         $current_categories[] = $archive_category_id;
         error_log('Added archive category ' . $archive_category_id . ' to post ' . $post_id);
     }
-    
+
     // Update categories (this replaces all categories)
     wp_set_post_categories($post_id, $current_categories);
 
@@ -514,27 +552,6 @@ function update_post_timestamp_on_price_change($post_id)
     error_log('Updated post timestamp for post ' . $post_id);
 }
 
-function process_price_update_api_enhanced($post_id, $price_data)
-{
-    // Handle empty price data - archive the post
-    if (empty($price_data) || count($price_data) === 0) {
-        $options = get_option('price_updates_options', array());
-        $archive_category = isset($options['archive_category']) ? intval($options['archive_category']) : 0;
-
-        error_log('No prices found for post ' . $post_id . '. Archiving.');
-        return archive_post($post_id, 'No prices available from any Amazon store', $archive_category);
-    }
-
-    // Continue with existing logic...
-    $result = process_price_update_api($post_id, $price_data);
-
-    // Update post timestamp if prices were actually updated
-    if (in_array($result, ['price_updated', 'price_decreased'])) {
-        update_post_timestamp_on_price_change($post_id);
-    }
-
-    return $result;
-}
 
 function update_discount_tag_replace_not_append($post_id, $discount_percentage)
 {

@@ -83,7 +83,7 @@ function generate_price_update_urls()
 
     $update_frequency = isset($options['update_frequency']) ? intval($options['update_frequency']) : 24;
     $max_urls = isset($priority_options['max_urls_per_request']) ? intval($priority_options['max_urls_per_request']) : 100;
-    $priority_recent = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 0; // Default to 0 now
+    $priority_recent = isset($priority_options['priority_recent_posts']) ? intval($priority_options['priority_recent_posts']) : 0;
     $prevent_duplicates = isset($priority_options['prevent_duplicate_requests']) ? intval($priority_options['prevent_duplicate_requests']) : 1;
     $min_interval_hours = isset($priority_options['min_request_interval']) ? intval($priority_options['min_request_interval']) : 2;
 
@@ -112,8 +112,11 @@ function generate_price_update_urls()
 
     // Base query for posts needing updates
     $base_query = "
-        SELECT DISTINCT p.ID, p.post_date, pm_link.meta_value as amazon_url, pm_asin.meta_value as asin,
-               pm_check.meta_value as last_check, pm_force.meta_value as force_update
+        SELECT DISTINCT p.ID, p.post_date, 
+            COALESCE(pm_link.meta_value, CONCAT('https://www.amazon.se/-/en/dp/', pm_asin.meta_value)) as amazon_url, 
+            pm_asin.meta_value as asin,
+            pm_check.meta_value as last_check, 
+            pm_force.meta_value as force_update
         FROM {$wpdb->posts} p
         INNER JOIN {$wpdb->term_relationships} tr1 ON p.ID = tr1.object_id
         INNER JOIN {$wpdb->term_taxonomy} tt1 ON tr1.term_taxonomy_id = tt1.term_taxonomy_id
@@ -121,7 +124,7 @@ function generate_price_update_urls()
         INNER JOIN {$wpdb->term_relationships} tr2 ON p.ID = tr2.object_id
         INNER JOIN {$wpdb->term_taxonomy} tt2 ON tr2.term_taxonomy_id = tt2.term_taxonomy_id
         INNER JOIN {$wpdb->terms} t2 ON tt2.term_id = t2.term_id
-        INNER JOIN {$wpdb->postmeta} pm_link ON p.ID = pm_link.post_id AND pm_link.meta_key = '_Amazone_produt_link'
+        LEFT JOIN {$wpdb->postmeta} pm_link ON p.ID = pm_link.post_id AND pm_link.meta_key = '_Amazone_produt_link'
         INNER JOIN {$wpdb->postmeta} pm_asin ON p.ID = pm_asin.post_id AND pm_asin.meta_key = '_Amazone_produt_baseName'
         LEFT JOIN {$wpdb->postmeta} pm_check ON p.ID = pm_check.post_id AND pm_check.meta_key = '_last_price_check'
         LEFT JOIN {$wpdb->postmeta} pm_disable ON p.ID = pm_disable.post_id AND pm_disable.meta_key = '_disable_price_updates'
@@ -133,7 +136,6 @@ function generate_price_update_urls()
         AND t1.slug = 'amazon'
         AND tt2.taxonomy = 'category'
         AND t2.slug = 'active-deals'
-        AND pm_link.meta_value IS NOT NULL
         AND pm_asin.meta_value IS NOT NULL
         AND (pm_disable.meta_value IS NULL OR pm_disable.meta_value != '1')
         AND (pm_validation.meta_value IS NULL OR pm_validation.meta_value != '1')
@@ -145,11 +147,11 @@ function generate_price_update_urls()
         {$exclude_clause}
     ";
 
-    // IMPROVED ORDERING LOGIC FOR FAIR ROTATION
+    // FIXED ORDERING: Prioritize NULL timestamps FIRST, then forced updates, then oldest checked
     $base_query .= " ORDER BY 
         CASE WHEN pm_force.meta_value = '1' THEN 0 ELSE 1 END,  -- Forced updates first
-        CASE WHEN pm_check.meta_value IS NULL THEN 0 ELSE 1 END,  -- Never checked posts second
-        COALESCE(pm_check.meta_value, 0) ASC,  -- Oldest checked posts next
+        CASE WHEN pm_check.meta_value IS NULL THEN 0 ELSE 1 END,  -- NULL timestamps get HIGHEST priority
+        CAST(pm_check.meta_value AS UNSIGNED) ASC,  -- Then oldest checked posts
         p.ID ASC  -- Consistent ordering for same timestamp
     ";
 
@@ -163,13 +165,13 @@ function generate_price_update_urls()
     $null_count = 0;
     $old_count = 0;
     $forced_count = 0;
-    
+
     foreach ($results as $row) {
         if ($row->force_update == '1') $forced_count++;
         elseif ($row->last_check === null) $null_count++;
         else $old_count++;
     }
-    
+
     error_log(sprintf(
         'Price update URLs generated: %d total (Forced: %d, Never checked: %d, Old: %d)',
         count($results),
@@ -509,12 +511,12 @@ function update_price_api_secure($request)
 {
     try {
         $start_time = microtime(true);
-        
+
         // Track request for diagnostics
         update_option('last_scraper_request_time', current_time('timestamp'));
-        
+
         $params = $request->get_params();
-        
+
         if (!isset($params['post_id']) || !isset($params['price_data'])) {
             return new WP_REST_Response(array(
                 'success' => false,
@@ -539,13 +541,13 @@ function update_price_api_secure($request)
         // Handle scraper errors with intelligent decision making
         if (!empty($scraper_errors)) {
             $result = handle_scraper_errors($post_id, $scraper_errors);
-            
+
             if ($result['action'] === 'archive') {
                 $options = get_option('price_updates_options', array());
                 $archive_category = isset($options['archive_category']) ? intval($options['archive_category']) : 0;
                 archive_post($post_id, $result['reason'], $archive_category);
                 remove_from_pending_updates($post_id);
-                
+
                 return new WP_REST_Response(array(
                     'success' => true,
                     'post_id' => $post_id,
@@ -557,13 +559,13 @@ function update_price_api_secure($request)
                 $retry_count = get_post_meta($post_id, '_price_update_retry_count', true);
                 $retry_count = $retry_count ? intval($retry_count) + 1 : 1;
                 update_post_meta($post_id, '_price_update_retry_count', $retry_count);
-                
+
                 // Log the temporary error
                 log_price_update_error($post_id, $result['reason'], array(
                     'scraper_errors' => $scraper_errors,
                     'retry_count' => $retry_count
                 ));
-                
+
                 // Keep in pending for retry
                 return new WP_REST_Response(array(
                     'success' => true,
@@ -582,11 +584,11 @@ function update_price_api_secure($request)
                 $retry_count = get_post_meta($post_id, '_price_update_retry_count', true);
                 $retry_count = $retry_count ? intval($retry_count) + 1 : 1;
                 update_post_meta($post_id, '_price_update_retry_count', $retry_count);
-                
+
                 log_price_update_error($post_id, 'Empty response - no data or errors', array(
                     'retry_count' => $retry_count
                 ));
-                
+
                 return new WP_REST_Response(array(
                     'success' => true,
                     'post_id' => $post_id,
@@ -599,7 +601,7 @@ function update_price_api_secure($request)
 
         // Process the price update (using existing function)
         $result = process_price_update_api($post_id, $price_data);
-        
+
         // Clear retry counter on success
         if (in_array($result, ['price_updated', 'price_decreased', 'needs_approval'])) {
             delete_post_meta($post_id, '_price_update_retry_count');
@@ -607,12 +609,12 @@ function update_price_api_secure($request)
         }
 
         remove_from_pending_updates($post_id);
-        
+
         // Record the update attempt
         update_post_meta($post_id, '_last_price_update_attempt', current_time('timestamp'));
 
         $processing_time = round((microtime(true) - $start_time) * 1000, 2);
-        
+
         // Track completion for diagnostics
         update_option('last_scraper_completion_time', current_time('timestamp'));
         $processed_count = get_option('last_scraper_processed_count', 0);
@@ -625,7 +627,6 @@ function update_price_api_secure($request)
             'message' => 'Price update processed successfully',
             'processing_time_ms' => $processing_time
         ), 200);
-        
     } catch (Exception $e) {
         error_log('Exception in price update API: ' . $e->getMessage());
 
@@ -645,10 +646,11 @@ function update_price_api_secure($request)
 define('SCRAPER_ERROR_NOT_FOUND', 'product_not_found');
 define('SCRAPER_ERROR_UNAVAILABLE', 'temporarily_unavailable');
 
-function handle_scraper_errors($post_id, $scraper_errors) {
+function handle_scraper_errors($post_id, $scraper_errors)
+{
     $retry_count = get_post_meta($post_id, '_price_update_retry_count', true);
     $retry_count = $retry_count ? intval($retry_count) : 0;
-    
+
     foreach ($scraper_errors as $error) {
         if (is_array($error)) {
             $error_type = isset($error['type']) ? $error['type'] : '';
@@ -658,7 +660,7 @@ function handle_scraper_errors($post_id, $scraper_errors) {
             $error_type = $error;
             $error_message = $error;
         }
-        
+
         switch ($error_type) {
             case SCRAPER_ERROR_NOT_FOUND:
                 // Product not found - archive immediately
@@ -667,7 +669,7 @@ function handle_scraper_errors($post_id, $scraper_errors) {
                     'reason' => 'Product not found on Amazon'
                 );
                 break;
-                
+
             case SCRAPER_ERROR_UNAVAILABLE:
                 // Price unavailable - archive immediately
                 return array(
@@ -675,7 +677,7 @@ function handle_scraper_errors($post_id, $scraper_errors) {
                     'reason' => 'Product price unavailable'
                 );
                 break;
-                
+
             default:
                 // Unknown error - still retry up to 5 times for unknown errors
                 if ($retry_count >= 5) {
@@ -691,7 +693,7 @@ function handle_scraper_errors($post_id, $scraper_errors) {
                 }
         }
     }
-    
+
     // If we get here with no specific errors, retry a few times
     if ($retry_count >= 3) {
         return array(
@@ -699,7 +701,7 @@ function handle_scraper_errors($post_id, $scraper_errors) {
             'reason' => 'Multiple failures with no specific error'
         );
     }
-    
+
     return array(
         'action' => 'retry',
         'reason' => 'Error encountered, will retry'
