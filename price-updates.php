@@ -1309,6 +1309,13 @@ function price_updates_admin_notices()
         'fields' => 'ids',
         'meta_key' => '_price_update_errors',
         'meta_compare' => 'EXISTS',
+        'tax_query' => array(
+            array(
+                'taxonomy' => 'category',
+                'field' => 'slug',
+                'terms' => 'active-deals',
+            ),
+        ),
     );
 
     $error_query = new WP_Query($error_args);
